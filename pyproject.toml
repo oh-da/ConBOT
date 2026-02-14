@@ -12,7 +12,7 @@ license = {text = "MIT"}
 authors = [
     {name = "Ohad", email = "ohad@example.com"}
 ]
-keywords = ["databricks", "delta-lake", "automation", "conference", "monitoring"]
+keywords = ["automation", "conference", "monitoring", "deadline-tracking", "sqlite"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -24,21 +24,35 @@ classifiers = [
 ]
 
 dependencies = [
-    "pyspark>=3.4.0",
-    "delta-spark>=2.4.0",
+    # Core
     "requests>=2.31.0",
     "urllib3>=2.0.0",
+    "pyyaml>=6.0.0",
+    "pydantic>=2.0.0",
+
+    # Web scraping
     "playwright>=1.40.0",
     "trafilatura>=1.6.0",
     "beautifulsoup4>=4.12.0",
     "lxml>=4.9.0",
+
+    # Date extraction
     "dateparser>=1.2.0",
     "python-dateutil>=2.8.0",
+
+    # LLM (optional)
     "openai>=1.0.0",
+
+    # Email notifications
     "boto3>=1.28.0",
-    "pydantic>=2.0.0",
     "jinja2>=3.1.0",
-    "pyyaml>=6.0.0",
+
+    # Local deployment (SQLite + scheduler)
+    "sqlalchemy>=2.0.0",
+    "apscheduler>=3.10.0",
+    "click>=8.1.0",
+    "python-dotenv>=1.0.0",
+    "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]
@@ -57,7 +71,7 @@ dev = [
 ]
 
 [project.scripts]
-conbot = "conbot.main:main"
+conbot = "conbot.cli:cli"
 
 [project.urls]
 Homepage = "https://github.com/ohad/ConBOT"
@@ -105,7 +119,7 @@ warn_no_return = true
 strict_equality = true
 
 [[tool.mypy.overrides]]
-module = "databricks.*,pyspark.*,boto3.*,trafilatura.*,dateparser.*"
+module = "boto3.*,trafilatura.*,dateparser.*,apscheduler.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

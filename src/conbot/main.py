@@ -26,7 +26,7 @@ from .extraction.dates import DateExtractor
 from .detection.fingerprint import ChangeDetector
 from .llm.client import LLMClient
 from .discovery.link_finder import LinkDiscovery
-from .state.delta_store import DeltaStore
+from .state.sqlite_store import SQLiteStore
 from .state.transitions import StateTransitionEngine
 from .state.audit import AuditLogger
 from .scheduling.dispatcher import ScheduleDispatcher
@@ -64,7 +64,7 @@ class ConferenceScanOrchestrator:
         sender_email: Optional[str] = None,
         aws_region: str = "us-east-1",
         llm_api_key: Optional[str] = None,
-        delta_table_path: Optional[str] = None,
+        db_path: Optional[str] = None,
         simhash_threshold: int = 5
     ):
         """
@@ -76,7 +76,7 @@ class ConferenceScanOrchestrator:
             sender_email: SES sender email (optional, uses secrets if None)
             aws_region: AWS region for SES
             llm_api_key: OpenAI API key (optional, uses secrets if None)
-            delta_table_path: Path to Delta tables (optional, uses default if None)
+            db_path: Path to SQLite database (optional, uses default ~/.conbot/conbot.db if None)
             simhash_threshold: Hamming distance threshold for semantic changes
         """
         logger.info("Initializing ConferenceScanOrchestrator")
@@ -103,15 +103,17 @@ class ConferenceScanOrchestrator:
             logger.warning(f"LLM client not available: {e}")
             self.llm_client = None
 
-        # Initialize Delta store
-        self.delta_store = DeltaStore(base_path=delta_table_path)
-        logger.info("Delta store initialized")
+        # Initialize SQLite store
+        import os
+        db_file = db_path or os.path.expanduser("~/.conbot/conbot.db")
+        self.store = SQLiteStore(db_path=db_file)
+        logger.info(f"SQLite store initialized: {db_file}")
 
         # Initialize audit logger
-        self.audit_logger = AuditLogger(delta_store=self.delta_store)
+        self.audit_logger = AuditLogger(delta_store=self.store)
 
         # Initialize scheduler
-        self.dispatcher = ScheduleDispatcher(delta_store=self.delta_store)
+        self.dispatcher = ScheduleDispatcher(delta_store=self.store)
 
         # Initialize email client
         try:
