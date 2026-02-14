@@ -2,13 +2,15 @@
 Secrets management for ConBOT.
 
 Provides unified interface for retrieving secrets from:
-- Databricks secret scopes (production)
-- Environment variables (local development)
-- .env files (local development)
+- Environment variables
+- .env files (loaded via python-dotenv)
+
+For local deployment only. Databricks version uses secret scopes.
 """
 
 import os
 from typing import Optional
+from pathlib import Path
 
 
 class SecretsError(Exception):
@@ -16,18 +18,39 @@ class SecretsError(Exception):
     pass
 
 
+# Load .env file if it exists (supports local development)
+try:
+    from dotenv import load_dotenv
+
+    # Try multiple locations for .env file
+    env_locations = [
+        Path.home() / ".conbot" / ".env",  # User-specific config
+        Path.cwd() / ".env",  # Current directory
+        Path(__file__).parent.parent.parent / ".env",  # Project root
+    ]
+
+    for env_path in env_locations:
+        if env_path.exists():
+            load_dotenv(env_path)
+            break
+
+except ImportError:
+    # python-dotenv not installed, env vars only
+    pass
+
+
 def get_secret(scope: str, key: str, default: Optional[str] = None) -> str:
     """
-    Retrieve a secret from Databricks or environment variables.
+    Retrieve a secret from environment variables.
 
     Tries in order:
-    1. Databricks secret scope (if available)
-    2. Environment variable (for local dev)
+    1. Environment variable with format: SCOPE_KEY (e.g., EMAIL_CREDENTIALS_SENDER_EMAIL)
+    2. Environment variable with just key (e.g., SENDER_EMAIL)
     3. Default value (if provided)
 
     Args:
-        scope: Databricks secret scope name
-        key: Secret key within the scope
+        scope: Namespace for the secret (for compatibility with Databricks API)
+        key: Secret key
         default: Optional default value if secret not found
 
     Returns:
@@ -40,22 +63,6 @@ def get_secret(scope: str, key: str, default: Optional[str] = None) -> str:
         >>> api_key = get_secret("llm-credentials", "openai_api_key")
         >>> sender = get_secret("email-credentials", "sender_email")
     """
-    # Try Databricks secrets first (only available in Databricks runtime)
-    try:
-        # Import dbutils only when in Databricks environment
-        from pyspark.dbutils import DBUtils
-        from pyspark.sql import SparkSession
-
-        spark = SparkSession.builder.getOrCreate()
-        dbutils = DBUtils(spark)
-
-        value = dbutils.secrets.get(scope=scope, key=key)
-        if value:
-            return value
-    except (ImportError, Exception):
-        # Not in Databricks environment or secret not found
-        pass
-
     # Try environment variable (format: SCOPE_KEY in uppercase)
     env_var_name = f"{scope}_{key}".upper().replace("-", "_")
     value = os.getenv(env_var_name)
@@ -73,8 +80,9 @@ def get_secret(scope: str, key: str, default: Optional[str] = None) -> str:
 
     # Secret not found and no default
     raise SecretsError(
-        f"Secret not found: {scope}/{key}. "
-        f"Tried: Databricks scope '{scope}', env vars '{env_var_name}', '{key.upper()}'"
+        f"Secret not found: {key}. "
+        f"Tried env vars: '{env_var_name}', '{key.upper().replace('-', '_')}'. "
+        f"Set in environment or add to ~/.conbot/.env file."
     )
 
 
@@ -85,43 +93,31 @@ def get_aws_ses_credentials() -> dict:
     Returns:
         Dictionary with 'access_key_id', 'secret_access_key', 'region', 'sender_email'
 
+    Note:
+        AWS credentials (access_key_id, secret_access_key) are optional if using IAM role.
+
     Raises:
         SecretsError: If required credentials are missing
     """
     return {
-        'access_key_id': get_secret("email-credentials", "aws_access_key_id"),
-        'secret_access_key': get_secret("email-credentials", "aws_secret_access_key"),
-        'region': get_secret("email-credentials", "ses_region", default="us-east-1"),
+        'access_key_id': get_secret("email-credentials", "aws_access_key_id", default=None),
+        'secret_access_key': get_secret("email-credentials", "aws_secret_access_key", default=None),
+        'region': get_secret("email-credentials", "aws_region", default="us-east-1"),
         'sender_email': get_secret("email-credentials", "sender_email"),
     }
 
 
-def get_openai_api_key() -> str:
+def get_openai_api_key() -> Optional[str]:
     """
     Get OpenAI API key from secrets.
 
     Returns:
-        OpenAI API key
+        OpenAI API key or None if not configured
 
-    Raises:
-        SecretsError: If API key not found
-    """
-    return get_secret("llm-credentials", "openai_api_key")
-
-
-def is_databricks_environment() -> bool:
-    """
-    Check if running in Databricks environment.
-
-    Returns:
-        True if in Databricks, False otherwise
+    Note:
+        OpenAI key is optional - system will work without LLM features.
     """
     try:
-        from pyspark.dbutils import DBUtils
-        from pyspark.sql import SparkSession
-
-        spark = SparkSession.builder.getOrCreate()
-        DBUtils(spark)
-        return True
-    except (ImportError, Exception):
-        return False
+        return get_secret("llm-credentials", "openai_api_key")
+    except SecretsError:
+        return None
