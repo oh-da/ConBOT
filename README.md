@@ -13,12 +13,47 @@ ConBOT monitors 6 conference websites (UITP Summit, ITDP, TRB, ITF, TRA, ITS Wor
 - **Discovers links** for dynamic conference pages (TRB, ITF)
 - **Provides audit trail** via Delta tables for full traceability
 
-## Architecture
+## Deployment Options
+
+ConBOT supports **two deployment models**:
+
+### 🏠 Local Deployment (NEW!)
+
+Run ConBOT on your personal computer - **recommended for personal use**.
+
+**Platform**: Local computer (Linux, macOS, Windows)
+**Storage**: SQLite database (~/.conbot/conbot.db)
+**Scheduling**: APScheduler daemon (background process)
+**Notifications**: AWS SES
+**Optional LLM**: OpenAI GPT-4o-mini
+
+**Cost**: ~$0.50-4/month (AWS SES + optional OpenAI)
+**Saves**: ~$96-120/month vs Databricks
+
+**Quick start**:
+```bash
+./scripts/install_local.sh
+conbot daemon start -r your@email.com
+```
+
+👉 **See [Local Deployment Guide](docs/LOCAL_DEPLOYMENT.md) for complete instructions**
+
+### ☁️ Databricks Deployment
+
+Run ConBOT on Databricks (cloud infrastructure).
 
 **Platform**: Databricks Workflows on AWS
 **Storage**: Delta Lake tables on S3
 **Notifications**: AWS SES
 **Optional LLM**: OpenAI GPT-4o-mini (for change summaries)
+
+**Cost**: ~$30-100/month (Databricks compute + AWS SES + OpenAI)
+
+👉 **See [Databricks Deployment Guide](docs/DEPLOYMENT.md) for complete instructions**
+
+---
+
+## Architecture (Local Deployment)
 
 ### Core Components
 
@@ -53,7 +88,44 @@ ConBOT/
 
 ## Installation
 
-### Local Development
+### Local Deployment (Recommended)
+
+**Quick install**:
+
+```bash
+# Clone repository
+git clone https://github.com/ohad/ConBOT.git
+cd ConBOT
+
+# Switch to local deployment branch
+git checkout feature/local-deployment
+
+# Run installation script
+./scripts/install_local.sh
+```
+
+This will:
+- ✅ Install ConBOT package and dependencies
+- ✅ Create ~/.conbot/ directory structure
+- ✅ Initialize SQLite database
+- ✅ Set up configuration templates
+
+**Next steps**:
+
+1. Edit configuration: `nano ~/.conbot/.env`
+2. Test email: `conbot test-email -r your@email.com`
+3. Start daemon: `conbot daemon start -r your@email.com`
+4. Check status: `conbot daemon status`
+
+📖 **Full guide**: [docs/LOCAL_DEPLOYMENT.md](docs/LOCAL_DEPLOYMENT.md)
+
+### Databricks Deployment
+
+See [Databricks Deployment Guide](docs/DEPLOYMENT.md) for cloud deployment instructions.
+
+### Development Setup
+
+For local development and testing:
 
 ```bash
 # Clone repository
@@ -71,7 +143,7 @@ pip install -e ".[dev]"
 playwright install chromium
 
 # Set up environment variables
-cp .env.example .env
+cp .env.template .env
 # Edit .env with your credentials
 ```
 
