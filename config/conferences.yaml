@@ -1,0 +1,279 @@
+version: 1
+defaults:
+  watch_mode: MONTHLY          # MONTHLY | BIWEEKLY | URGENT (state machine will update this)
+  throttle_seconds: 1.5        # polite crawling per-domain
+  request_timeout_seconds: 25
+  max_retries: 3
+  backoff_seconds: 2
+  fetch_mode: auto             # auto | requests | playwright
+  store_raw_html_on_change: true
+
+  # Used to pull "relevant snippets" for diff + extraction + LLM-on-change
+  keyword_groups:
+    cfp:
+      - "call for papers"
+      - "call for abstracts"
+      - "call for sessions"
+      - "call for proposals"
+      - "submission"
+      - "submissions"
+      - "submit"
+      - "abstracts"
+      - "papers"
+      - "proposals"
+      - "important dates"
+      - "key dates"
+      - "deadlines"
+      - "deadline"
+      - "extended"
+      - "extension"
+      - "opens"
+      - "open now"
+      - "closes"
+      - "closing date"
+    no_dates:
+      - "upcoming"
+      - "coming soon"
+      - "to be announced"
+      - "tba"
+      - "details soon"
+      - "will be announced"
+      - "stay tuned"
+
+conferences:
+  - id: uitp_summit
+    name: "UITP Summit"
+    primary_domain: "uitpsummit.org"
+    urls:
+      - "https://www.uitpsummit.org/"
+    secondary_urls:
+      - "https://www.uitpsummit.org/programme/"
+      - "https://www.uitpsummit.org/speakers/"
+      - "https://www.uitpsummit.org/press/"
+      - "https://www.uitpsummit.org/news/"
+      - "https://www.uitpsummit.org/call-for-papers/"
+      - "https://www.uitpsummit.org/call-for-speakers/"
+      - "https://www.uitpsummit.org/abstracts/"
+    fetch_mode: auto
+    js_required: false
+    link_discovery:
+      enabled: true
+      seed_urls:
+        - "https://www.uitpsummit.org/"
+      include_if_url_contains:
+        - "call"
+        - "paper"
+        - "abstract"
+        - "proposal"
+        - "submission"
+        - "deadline"
+        - "dates"
+        - "news"
+      include_if_anchor_contains:
+        - "call for"
+        - "submit"
+        - "abstract"
+        - "paper"
+        - "proposal"
+        - "important dates"
+      max_discovered_urls: 12
+
+  - id: itdp_conferences
+    name: "ITDP Conferences"
+    primary_domain: "itdp.org"
+    urls:
+      - "https://itdp.org/event-type/conferences/"
+      - "https://itdp.org/events/"
+    secondary_urls:
+      - "https://itdp.org/latest/"
+      - "https://itdp.org/category/news/"
+    fetch_mode: auto
+    js_required: false
+    link_discovery:
+      enabled: true
+      seed_urls:
+        - "https://itdp.org/event-type/conferences/"
+        - "https://itdp.org/events/"
+      include_if_url_contains:
+        - "conference"
+        - "summit"
+        - "event"
+        - "call"
+        - "proposal"
+        - "paper"
+        - "abstract"
+        - "submission"
+        - "deadline"
+        - "dates"
+      include_if_anchor_contains:
+        - "conference"
+        - "summit"
+        - "call for"
+        - "submit"
+        - "abstract"
+        - "paper"
+        - "proposal"
+        - "deadline"
+        - "important dates"
+      max_discovered_urls: 20
+
+  - id: trb_annual_meeting
+    name: "TRB (Annual Meeting / Calls)"
+    primary_domain: "nationalacademies.org"
+    urls:
+      - "https://www.nationalacademies.org/units/TRB-Transporta-23-P-586"
+    secondary_urls:
+      - "https://www.nationalacademies.org/trb/transportation-research-board"
+      - "https://www.nationalacademies.org/news"
+    fetch_mode: auto
+    js_required: true
+    link_discovery:
+      enabled: true
+      seed_urls:
+        - "https://www.nationalacademies.org/units/TRB-Transporta-23-P-586"
+        - "https://www.nationalacademies.org/trb/transportation-research-board"
+      include_if_url_contains:
+        - "annual"
+        - "meeting"
+        - "am"
+        - "trb"
+        - "call"
+        - "papers"
+        - "abstract"
+        - "submission"
+        - "deadline"
+        - "important-dates"
+        - "program"
+      include_if_anchor_contains:
+        - "annual meeting"
+        - "important dates"
+        - "call for"
+        - "call for papers"
+        - "call for abstracts"
+        - "submit"
+        - "submission"
+        - "deadlines"
+      exclude_if_url_contains:
+        - "donate"
+        - "membership"
+        - "privacy"
+        - "terms"
+        - "contact"
+      max_discovered_urls: 25
+      require_same_domain: true
+
+  - id: itf_summit
+    name: "ITF Summit (OECD)"
+    primary_domain: "itf-oecd.org"
+    urls:
+      - "https://www.itf-oecd.org/summit"
+    secondary_urls:
+      - "https://www.itf-oecd.org/news"
+      - "https://www.itf-oecd.org/press"
+      - "https://www.itf-oecd.org/events"
+    fetch_mode: auto
+    js_required: false
+    link_discovery:
+      enabled: true
+      seed_urls:
+        - "https://www.itf-oecd.org/summit"
+        - "https://www.itf-oecd.org/news"
+        - "https://www.itf-oecd.org/events"
+      include_if_url_contains:
+        - "summit"
+        - "call"
+        - "proposal"
+        - "paper"
+        - "abstract"
+        - "submission"
+        - "deadline"
+        - "dates"
+      include_if_anchor_contains:
+        - "summit"
+        - "call for"
+        - "submit"
+        - "proposal"
+        - "paper"
+        - "abstract"
+        - "deadline"
+        - "important dates"
+      max_discovered_urls: 25
+
+  - id: tra
+    name: "Transport Research Arena (TRA)"
+    primary_domain: "traconference.eu"
+    urls:
+      - "http://traconference.eu/"
+    secondary_urls:
+      - "http://traconference.eu/call-for-papers/"
+      - "http://traconference.eu/call-for-abstracts/"
+      - "http://traconference.eu/call-for-sessions/"
+      - "http://traconference.eu/important-dates/"
+      - "http://traconference.eu/news/"
+      - "http://traconference.eu/programme/"
+    fetch_mode: auto
+    js_required: false
+    link_discovery:
+      enabled: true
+      seed_urls:
+        - "http://traconference.eu/"
+      include_if_url_contains:
+        - "call"
+        - "paper"
+        - "abstract"
+        - "proposal"
+        - "session"
+        - "submission"
+        - "deadline"
+        - "dates"
+        - "news"
+      include_if_anchor_contains:
+        - "call for"
+        - "submit"
+        - "abstract"
+        - "paper"
+        - "proposal"
+        - "session"
+        - "important dates"
+        - "deadlines"
+      max_discovered_urls: 20
+
+  - id: its_world_congress
+    name: "ITS World Congress"
+    primary_domain: "itsinternational.com"
+    urls:
+      - "https://www.itsinternational.com/events/its-world-congress-2027"
+    secondary_urls:
+      - "https://www.itsinternational.com/events"
+      - "https://www.itsinternational.com/news"
+      - "https://www.itsinternational.com/event/its-world-congress"
+      - "https://www.itsinternational.com/tag/its-world-congress"
+    fetch_mode: auto
+    js_required: true
+    link_discovery:
+      enabled: true
+      seed_urls:
+        - "https://www.itsinternational.com/events/its-world-congress-2027"
+        - "https://www.itsinternational.com/events"
+      include_if_url_contains:
+        - "world-congress"
+        - "call"
+        - "papers"
+        - "abstract"
+        - "proposal"
+        - "submission"
+        - "deadline"
+        - "dates"
+        - "programme"
+        - "conference"
+      include_if_anchor_contains:
+        - "world congress"
+        - "call for"
+        - "submit"
+        - "abstract"
+        - "paper"
+        - "proposal"
+        - "deadline"
+        - "important dates"
+      max_discovered_urls: 25
+      require_same_domain: true

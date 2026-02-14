@@ -1,0 +1,149 @@
+# Databricks Workflow Configuration for ConBOT Daily Scan
+#
+# This workflow runs daily at 09:00 UTC to scan conference websites
+# for CFP announcements and deadline updates.
+#
+# Deploy with Databricks CLI:
+#   databricks jobs create --json-file databricks/workflows/daily_scan.yaml
+
+name: "ConBOT Daily Conference Scan"
+
+# Schedule: Daily at 09:00 UTC
+schedule:
+  quartz_cron_expression: "0 0 9 * * ?"  # Every day at 09:00 UTC
+  timezone_id: "UTC"
+  pause_status: "UNPAUSED"
+
+# Email notifications for job failures
+email_notifications:
+  on_failure:
+    - "your-email@example.com"  # Replace with your email
+  on_success: []
+  no_alert_for_skipped_runs: false
+
+# Max concurrent runs (prevent overlapping scans)
+max_concurrent_runs: 1
+
+# Job timeout (2 hours max)
+timeout_seconds: 7200
+
+# Cluster configuration
+job_clusters:
+  - job_cluster_key: "conbot_cluster"
+    new_cluster:
+      # Single-node cluster (sufficient for 6 conferences)
+      num_workers: 0  # Single-node mode
+
+      # Runtime version (Databricks 13.3+ for Delta Lake 2.4+)
+      spark_version: "13.3.x-scala2.12"
+
+      # Instance type (i3.xlarge recommended for cost/performance)
+      node_type_id: "i3.xlarge"
+
+      # Driver instance (same as worker in single-node)
+      driver_node_type_id: "i3.xlarge"
+
+      # AWS instance profile for SES access
+      aws_attributes:
+        instance_profile_arn: "arn:aws:iam::YOUR_ACCOUNT:instance-profile/databricks-conbot-role"
+        availability: "SPOT_WITH_FALLBACK"  # Use spot instances for cost savings
+        zone_id: "us-east-1a"
+
+      # Spark configuration
+      spark_conf:
+        "spark.databricks.delta.retentionDurationCheck.enabled": "false"
+        "spark.sql.adaptive.enabled": "true"
+
+      # Environment variables (non-sensitive)
+      spark_env_vars:
+        PYTHONPATH: "/databricks/python3:/databricks/spark/python"
+
+      # Auto-termination (terminate after 15 min idle)
+      autotermination_minutes: 15
+
+      # Python libraries
+      init_scripts: []
+
+      # Cluster log configuration
+      cluster_log_conf:
+        dbfs:
+          destination: "dbfs:/cluster-logs/conbot"
+
+# Task definition
+tasks:
+  - task_key: "daily_scan_task"
+
+    job_cluster_key: "conbot_cluster"
+
+    # Python wheel task
+    python_wheel_task:
+      package_name: "conbot"
+      entry_point: "main"  # Calls conbot.main:main()
+
+      # CLI parameters for daily scan mode
+      parameters:
+        - "--mode=daily"
+        - "--config=/dbfs/conbot/config/conferences.yaml"
+        - "--log-level=INFO"
+
+    # Libraries (wheel + dependencies)
+    libraries:
+      # Main ConBOT wheel (upload to DBFS)
+      - whl: "dbfs:/FileStore/wheels/conbot-1.0.0-py3-none-any.whl"
+
+      # PyPI dependencies (runtime)
+      - pypi:
+          package: "requests>=2.31.0"
+      - pypi:
+          package: "beautifulsoup4>=4.12.0"
+      - pypi:
+          package: "trafilatura>=1.6.0"
+      - pypi:
+          package: "dateparser>=1.2.0"
+      - pypi:
+          package: "python-dateutil>=2.8.0"
+      - pypi:
+          package: "openai>=1.0.0"
+      - pypi:
+          package: "boto3>=1.28.0"
+      - pypi:
+          package: "pydantic>=2.0.0"
+      - pypi:
+          package: "jinja2>=3.1.0"
+      - pypi:
+          package: "pyyaml>=6.0.0"
+      - pypi:
+          package: "playwright>=1.40.0"
+
+    # Timeout for this specific task (90 minutes)
+    timeout_seconds: 5400
+
+    # Retry policy (retry once if fails)
+    max_retries: 1
+    min_retry_interval_millis: 60000  # 1 minute between retries
+
+# Workflow-level settings
+format: "MULTI_TASK"
+
+# Tags for cost tracking
+tags:
+  project: "conbot"
+  environment: "production"
+  cost_center: "research"
+
+# Access control (optional)
+access_control_list:
+  - user_name: "your-email@example.com"
+    permission_level: "IS_OWNER"
+
+# Webhook notifications (optional - Slack integration)
+# webhook_notifications:
+#   on_failure:
+#     - id: "slack-webhook-id"
+#   on_success: []
+
+# Git source (optional - if using Databricks Repos)
+# git_source:
+#   git_url: "https://github.com/your-org/conbot"
+#   git_provider: "github"
+#   git_branch: "main"
