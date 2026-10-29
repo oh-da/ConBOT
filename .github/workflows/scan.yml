@@ -1,0 +1,132 @@
+name: ConBOT scan
+
+on:
+  schedule:
+    # Daily at 05:17 UTC. ConBOT's own state machine (MONTHLY / BIWEEKLY / URGENT)
+    # decides which conferences are actually due on a given day.
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "What to run"
+        type: choice
+        default: scan
+        options:
+          - scan
+          - force-scan
+          - test-email
+
+# Never run two at once: they would race on the state branch.
+concurrency:
+  group: conbot-scan
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the state branch
+
+env:
+  STATE_BRANCH: bot-state
+  CONBOT_DB_PATH: ${{ github.workspace }}/conbot.db
+  SMTP_HOST: ${{ vars.SMTP_HOST || 'smtp.gmail.com' }}
+  SMTP_PORT: ${{ vars.SMTP_PORT || '587' }}
+  SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+  SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+  SENDER_EMAIL: ${{ vars.SENDER_EMAIL }}
+  RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      # The SQLite state lives on its own branch as JSON (diff-friendly), because
+      # the runner's disk is wiped after every run.
+      - name: Check required secrets
+        run: |
+          missing=0
+          for name in SMTP_USERNAME SMTP_PASSWORD RECIPIENT_EMAIL; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Repository secret $name is not set (Settings > Secrets and variables > Actions)"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Look for state branch
+        id: state-branch
+        run: |
+          if git ls-remote --exit-code --heads origin "$STATE_BRANCH" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out state branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.state-branch.outputs.exists == 'true' && env.STATE_BRANCH || github.sha }}
+          path: state
+
+      - name: Start empty state branch (first run)
+        if: steps.state-branch.outputs.exists != 'true'
+        working-directory: state
+        run: |
+          git checkout --orphan "$STATE_BRANCH"
+          git rm -rf -q .
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ConBOT
+        run: pip install .
+
+      - name: Install Chromium for JavaScript-heavy sites
+        run: playwright install --with-deps chromium
+
+      - name: Restore state
+        run: |
+          if [ -f state/current.json ]; then
+            conbot db restore -d "$CONBOT_DB_PATH" \
+              --current state/current.json \
+              --audit state/audit.json \
+              --history state/history.json
+          else
+            echo "No saved state yet - every conference will take a fresh baseline."
+          fi
+
+      - name: Send test email
+        if: github.event.inputs.action == 'test-email'
+        run: conbot test-email -r "$RECIPIENT_EMAIL"
+
+      - name: Scan conferences
+        id: scan
+        if: github.event.inputs.action != 'test-email'
+        run: |
+          FORCE=""
+          if [ "${{ github.event.inputs.action }}" = "force-scan" ]; then FORCE="--force"; fi
+          conbot scan --all $FORCE \
+            -r "$RECIPIENT_EMAIL" \
+            -c config/conferences.yaml \
+            -d "$CONBOT_DB_PATH"
+
+      # Run even if some conferences failed, but not if the scan never started
+      # (e.g. the restore failed), so a bad run can't overwrite good state.
+      - name: Save state
+        if: always() && steps.scan.outcome != 'skipped' && hashFiles('conbot.db') != ''
+        run: |
+          conbot db backup -d "$CONBOT_DB_PATH" -o state
+          cd state
+          git config user.name "conbot[bot]"
+          git config user.email "conbot[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "State unchanged."
+          else
+            git commit -q -m "Update state $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push origin "HEAD:$STATE_BRANCH"
+          fi

@@ -117,6 +117,7 @@ class ConferenceState(BaseModel):
         updated_at: Last update timestamp
     """
     conference_id: str
+    conference_name: Optional[str] = None  # Display name from YAML; not persisted in DB
     url: HttpUrl
     watch_mode: WatchMode
     next_run_at: datetime

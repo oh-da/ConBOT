@@ -125,16 +125,3 @@ def mock_requests_response():
     </body></html>
     """
     return mock_response
-
-
-@pytest.fixture
-def mock_ses_client():
-    """Mock AWS SES client."""
-    from moto import mock_ses
-    import boto3
-
-    with mock_ses():
-        client = boto3.client('ses', region_name='us-east-1')
-        # Verify a sender email
-        client.verify_email_identity(EmailAddress='test@example.com')
-        yield client

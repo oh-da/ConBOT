@@ -10,12 +10,21 @@ from conbot.extraction.dates import DateExtractor
 from conbot.models.conference import DeadlineType
 
 
+def _extractor() -> DateExtractor:
+    """Extractor with a fixed validity window.
+
+    The default window starts today, which makes the hard-coded 2026 dates in
+    these tests expire as the calendar moves on.
+    """
+    return DateExtractor(min_date=date(2026, 1, 1), max_date=date(2027, 12, 31))
+
+
 class TestDateExtractor:
     """Test suite for DateExtractor class."""
 
     def test_extract_simple_date(self):
         """Test extraction of simple date format."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = "Abstract submission deadline: March 15, 2026"
 
         deadlines = extractor.extract_deadlines(text, [])
@@ -28,7 +37,7 @@ class TestDateExtractor:
 
     def test_extract_multiple_dates(self):
         """Test extraction of multiple deadlines."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = """
         Important Dates:
         - Abstract deadline: March 15, 2026
@@ -42,7 +51,7 @@ class TestDateExtractor:
 
     def test_exclude_footer_dates(self):
         """Test that footer/copyright dates are excluded."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = "Copyright 2025. All rights reserved."
 
         deadlines = extractor.extract_deadlines(text, [])
@@ -52,7 +61,7 @@ class TestDateExtractor:
 
     def test_validate_date_range_past(self):
         """Test that past dates are rejected."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         past_text = "Deadline was January 1, 2020"
 
         deadlines = extractor.extract_deadlines(past_text, [])
@@ -61,7 +70,7 @@ class TestDateExtractor:
 
     def test_validate_date_range_far_future(self):
         """Test that dates too far in future are rejected."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         # Default max is today + 730 days (2 years)
         far_future = date.today() + timedelta(days=1000)
         far_future_text = f"Deadline is {far_future.strftime('%B %d, %Y')}"
@@ -72,7 +81,7 @@ class TestDateExtractor:
 
     def test_classify_abstract_deadline(self):
         """Test classification of abstract deadline."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = "Abstract submission due March 1, 2026"
 
         deadlines = extractor.extract_deadlines(text, [])
@@ -82,7 +91,7 @@ class TestDateExtractor:
 
     def test_classify_paper_deadline(self):
         """Test classification of paper deadline."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = "Full paper deadline April 15, 2026"
 
         deadlines = extractor.extract_deadlines(text, [])
@@ -92,7 +101,7 @@ class TestDateExtractor:
 
     def test_classify_registration_deadline(self):
         """Test classification of registration deadline."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = "Registration closes May 1, 2026"
 
         deadlines = extractor.extract_deadlines(text, [])
@@ -102,7 +111,7 @@ class TestDateExtractor:
 
     def test_deduplication(self):
         """Test that duplicate deadlines are removed."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         # Same date mentioned twice in different ways
         text = """
         Abstract deadline: March 15, 2026
@@ -120,7 +129,7 @@ class TestDateExtractor:
 
     def test_snippets_boost_confidence(self):
         """Test that snippets get confidence boost."""
-        extractor = DateExtractor()
+        extractor = _extractor()
 
         # Same text in main vs snippet
         text = "Deadline: March 15, 2026"
@@ -137,7 +146,7 @@ class TestDateExtractor:
 
     def test_sorting_by_date(self):
         """Test that deadlines are sorted by date."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = """
         - Paper deadline: April 30, 2026
         - Abstract deadline: March 15, 2026
@@ -153,7 +162,7 @@ class TestDateExtractor:
 
     def test_source_text_captured(self):
         """Test that source text is captured in deadline."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = "Abstract submission deadline: March 15, 2026"
 
         deadlines = extractor.extract_deadlines(text, [])
@@ -165,7 +174,7 @@ class TestDateExtractor:
 
     def test_exclude_last_updated(self):
         """Test that 'last updated' dates are excluded."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = "Last updated: February 14, 2025"
 
         deadlines = extractor.extract_deadlines(text, [])
@@ -190,7 +199,7 @@ class TestDateExtractor:
 
     def test_empty_text(self):
         """Test handling of empty text."""
-        extractor = DateExtractor()
+        extractor = _extractor()
 
         deadlines = extractor.extract_deadlines("", [])
 
@@ -198,7 +207,7 @@ class TestDateExtractor:
 
     def test_iso_date_format(self):
         """Test parsing of ISO date format."""
-        extractor = DateExtractor()
+        extractor = _extractor()
         text = "Deadline: 2026-03-15"
 
         deadlines = extractor.extract_deadlines(text, [])

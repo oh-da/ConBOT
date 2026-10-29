@@ -11,23 +11,32 @@ ConBOT monitors 6 conference websites (UITP Summit, ITDP, TRB, ITF, TRA, ITS Wor
 - **Adapts monitoring frequency** via state machine (MONTHLY → BIWEEKLY → URGENT)
 - **Sends email alerts** with three templates (NO_CHANGE, CHANGE_NO_DATES, CHANGE_WITH_DATES)
 - **Discovers links** for dynamic conference pages (TRB, ITF)
-- **Provides audit trail** via Delta tables for full traceability
+- **Provides audit trail** in SQLite (scan history + audit tables) for full traceability
 
 ## Deployment Options
 
-ConBOT supports **two deployment models**:
+ConBOT supports **three deployment models**:
 
-### 🏠 Local Deployment (NEW!)
+### 🤖 GitHub Actions (no server, free)
+
+Run ConBOT on a daily schedule in GitHub Actions. State is kept as JSON on a
+`bot-state` branch; email goes out over SMTP (e.g. Gmail).
+
+**Cost**: $0 (free Actions minutes; optional OpenAI)
+
+👉 **See [GitHub Actions Guide](docs/GITHUB_ACTIONS.md) for setup**
+
+### 🏠 Local Deployment
 
 Run ConBOT on your personal computer - **recommended for personal use**.
 
 **Platform**: Local computer (Linux, macOS, Windows)
 **Storage**: SQLite database (~/.conbot/conbot.db)
 **Scheduling**: APScheduler daemon (background process)
-**Notifications**: AWS SES
+**Notifications**: SMTP (e.g. Gmail)
 **Optional LLM**: OpenAI GPT-4o-mini
 
-**Cost**: ~$0.50-4/month (AWS SES + optional OpenAI)
+**Cost**: ~$0-4/month (SMTP + optional OpenAI)
 **Saves**: ~$96-120/month vs Databricks
 
 **Quick start**:
@@ -38,7 +47,11 @@ conbot daemon start -r your@email.com
 
 👉 **See [Local Deployment Guide](docs/LOCAL_DEPLOYMENT.md) for complete instructions**
 
-### ☁️ Databricks Deployment
+### ☁️ Databricks Deployment (legacy)
+
+> **Not maintained:** the code now stores state in SQLite and sends mail over
+> SMTP, so the Databricks files (`databricks/`, `docs/DEPLOYMENT.md`,
+> `scripts/deploy.sh`) no longer match it and are kept for reference only.
 
 Run ConBOT on Databricks (cloud infrastructure).
 
@@ -152,14 +165,15 @@ cp .env.template .env
 Create `.env` file:
 
 ```bash
-# AWS SES
-EMAIL_CREDENTIALS_AWS_ACCESS_KEY_ID=your_access_key
-EMAIL_CREDENTIALS_AWS_SECRET_ACCESS_KEY=your_secret_key
-EMAIL_CREDENTIALS_SES_REGION=us-east-1
-EMAIL_CREDENTIALS_SENDER_EMAIL=conbot@yourdomain.com
+# SMTP (the EMAIL_CREDENTIALS_ prefix is optional: SMTP_HOST also works)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=you@gmail.com
+SMTP_PASSWORD=your-app-password
+SENDER_EMAIL=you@gmail.com
 
 # OpenAI (optional)
-LLM_CREDENTIALS_OPENAI_API_KEY=sk-...
+OPENAI_API_KEY=sk-...
 ```
 
 ## Configuration
@@ -305,16 +319,16 @@ Once in URGENT mode, system stays there until conference passes.
 - **Databricks**: ~$30-100/month (single-node cluster, 1 hour/day)
 - **Storage (S3)**: <$1/month (Delta tables + HTML snapshots)
 - **LLM (OpenAI)**: $0-4/month (only called on changes)
-- **Email (SES)**: ~$0/month (first 62,000 emails free)
+- **Email (SMTP)**: $0 with Gmail or most providers
 
 **Total**: ~$30-100/month
 
 ## Troubleshooting
 
 ### Email not received
-- Check AWS SES sandbox mode (verify recipient emails)
-- Check Databricks job logs for errors
-- Verify secrets are set: `databricks secrets list --scope email-credentials`
+- Run `conbot test-email -r you@example.com`
+- Gmail needs an app password, not your account password
+- See [Troubleshooting](docs/TROUBLESHOOTING.md#email-issues)
 
 ### False positives (spurious alerts)
 - Tune `SIMHASH_THRESHOLD` in `src/conbot/detection/fingerprint.py`

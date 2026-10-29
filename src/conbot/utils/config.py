@@ -140,3 +140,45 @@ def merge_with_defaults(conference_config: Dict[str, Any], defaults: Dict[str, A
     merged = defaults.copy()
     merged.update(conference_config)
     return merged
+
+
+def load_conference_config(file_path: str | Path = None) -> List[Dict[str, Any]]:
+    """
+    Load conferences.yaml as a flat list of per-conference settings.
+
+    Each entry is the conference block merged over ``defaults`` and gets
+    these convenience keys:
+
+    - ``name``: display name (falls back to the id)
+    - ``primary_url``: first entry of ``urls``/``primary_urls``
+    - ``keyword_groups``: dict of keyword lists (``cfp``, ``no_dates``)
+    - ``cfp_keywords`` / ``no_dates_keywords``: the two lists, flattened
+
+    Args:
+        file_path: Optional path to conferences.yaml
+
+    Returns:
+        List of conference dicts
+
+    Raises:
+        ConfigurationError: If configuration is invalid
+    """
+    config = load_conferences_config(file_path)
+    defaults = config['defaults']
+
+    conferences = []
+    for conf in config['conferences']:
+        merged = merge_with_defaults(conf, defaults)
+        urls = conf.get('urls') or conf.get('primary_urls') or []
+        if not urls:
+            raise ConfigurationError(f"Conference '{conf['id']}' has an empty url list")
+
+        groups = merged.get('keyword_groups') or {}
+        merged['name'] = conf.get('name', conf['id'])
+        merged['primary_url'] = urls[0]
+        merged['keyword_groups'] = groups
+        merged['cfp_keywords'] = list(groups.get('cfp', []))
+        merged['no_dates_keywords'] = list(groups.get('no_dates', []))
+        conferences.append(merged)
+
+    return conferences

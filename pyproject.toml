@@ -7,7 +7,7 @@ name = "conbot"
 version = "1.0.0"
 description = "Conference tracking bot for automated deadline monitoring"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
     {name = "Ohad", email = "ohad@example.com"}
@@ -18,7 +18,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
 ]
@@ -43,8 +42,7 @@ dependencies = [
     # LLM (optional)
     "openai>=1.0.0",
 
-    # Email notifications
-    "boto3>=1.28.0",
+    # Email notifications (SMTP via the standard library)
     "jinja2>=3.1.0",
 
     # Local deployment (SQLite + scheduler)
@@ -60,7 +58,6 @@ dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.11.0",
-    "moto[ses]>=4.2.0",
     "black>=23.0.0",
     "isort>=5.12.0",
     "ruff>=0.1.0",
@@ -84,7 +81,7 @@ include = ["conbot*"]
 
 [tool.black]
 line-length = 100
-target-version = ['py39', 'py310', 'py311']
+target-version = ['py310', 'py311']
 include = '\.pyi?$'
 extend-exclude = '''
 /(
@@ -106,7 +103,7 @@ skip_gitignore = true
 known_first_party = ["conbot"]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
@@ -119,7 +116,7 @@ warn_no_return = true
 strict_equality = true
 
 [[tool.mypy.overrides]]
-module = "boto3.*,trafilatura.*,dateparser.*,apscheduler.*"
+module = "trafilatura.*,dateparser.*,apscheduler.*"
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -156,7 +153,7 @@ precision = 2
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py310"
 select = ["E", "W", "F", "I", "N", "UP"]
 ignore = ["E501"]
 

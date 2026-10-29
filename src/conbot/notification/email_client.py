@@ -1,30 +1,35 @@
 """
-AWS SES email client for conference notifications.
+SMTP email client for conference notifications.
 
-Sends emails via AWS Simple Email Service with error handling.
+Sends HTML + plain text emails through any SMTP server (Gmail, Outlook,
+Fastmail, Mailgun, ...) using only the standard library.
 """
 
-import boto3
-from botocore.exceptions import ClientError, BotoCoreError
-from typing import List, Optional
 import logging
+import re
+import smtplib
+import ssl
 import time
-from datetime import datetime
+from email.message import EmailMessage
+from email.utils import formatdate, make_msgid
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
 
-class SESEmailClient:
+class SMTPEmailClient:
     """
-    AWS SES email client with retry and error handling.
+    SMTP email client with retry and error handling.
 
-    Sends HTML and plain text emails via AWS SES.
-    Handles rate limits, bounces, and unverified sender errors.
+    Port 465 uses implicit TLS (SMTP_SSL); any other port connects in
+    plain text and upgrades with STARTTLS (587 is the usual choice).
 
     Example:
-        >>> client = SESEmailClient(
-        ...     sender_email="conbot@example.com",
-        ...     aws_region="us-east-1"
+        >>> client = SMTPEmailClient(
+        ...     host="smtp.gmail.com",
+        ...     port=587,
+        ...     username="me@gmail.com",
+        ...     password="app-password",
         ... )
         >>> client.send_email(
         ...     to_addresses=["user@example.com"],
@@ -36,46 +41,116 @@ class SESEmailClient:
 
     def __init__(
         self,
-        sender_email: str,
-        aws_region: str = "us-east-1",
-        aws_access_key_id: Optional[str] = None,
-        aws_secret_access_key: Optional[str] = None,
+        host: str,
+        username: str,
+        password: str,
+        sender_email: Optional[str] = None,
+        port: int = 587,
+        timeout: float = 30.0,
         max_retries: int = 3,
-        retry_delay: float = 2.0
+        retry_delay: float = 2.0,
     ):
         """
-        Initialize SES email client.
+        Initialize SMTP email client.
 
         Args:
-            sender_email: Verified SES sender email address
-            aws_region: AWS region for SES (default: us-east-1)
-            aws_access_key_id: AWS access key (optional, uses IAM role if None)
-            aws_secret_access_key: AWS secret key (optional, uses IAM role if None)
-            max_retries: Maximum retry attempts for throttling
-            retry_delay: Initial delay between retries (seconds)
+            host: SMTP server hostname
+            username: SMTP login (usually the full email address)
+            password: SMTP password or app password
+            sender_email: From address (default: username)
+            port: SMTP port (587 = STARTTLS, 465 = implicit TLS)
+            timeout: Socket timeout in seconds
+            max_retries: Maximum attempts for transient failures
+            retry_delay: Initial delay between retries (seconds, doubles each retry)
 
         Raises:
-            ValueError: If sender_email is empty
+            ValueError: If host, username or password is empty
         """
-        if not sender_email:
-            raise ValueError("sender_email cannot be empty")
+        if not host:
+            raise ValueError("host cannot be empty")
+        if not username or not password:
+            raise ValueError("username and password cannot be empty")
 
-        self.sender_email = sender_email
-        self.aws_region = aws_region
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.sender_email = sender_email or username
+        self.timeout = timeout
         self.max_retries = max_retries
         self.retry_delay = retry_delay
 
-        # Initialize boto3 SES client
-        session_kwargs = {"region_name": aws_region}
-        if aws_access_key_id and aws_secret_access_key:
-            session_kwargs["aws_access_key_id"] = aws_access_key_id
-            session_kwargs["aws_secret_access_key"] = aws_secret_access_key
-
-        self.ses_client = boto3.client("ses", **session_kwargs)
-
         logger.info(
-            f"SES client initialized: sender={sender_email}, region={aws_region}"
+            f"SMTP client initialized: host={host}:{port}, sender={self.sender_email}"
         )
+
+    @classmethod
+    def from_env(cls, sender_email: Optional[str] = None) -> "SMTPEmailClient":
+        """
+        Build a client from environment variables / ~/.conbot/.env.
+
+        Variables (also accepted with an EMAIL_CREDENTIALS_ prefix):
+            SMTP_HOST      server hostname (default: smtp.gmail.com)
+            SMTP_PORT      587 = STARTTLS, 465 = implicit TLS (default: 587)
+            SMTP_USERNAME  login (required)
+            SMTP_PASSWORD  password / app password (required)
+            SENDER_EMAIL   From address (default: SMTP_USERNAME)
+
+        Raises:
+            SecretsError: If SMTP_USERNAME or SMTP_PASSWORD is missing
+        """
+        from ..utils.secrets import get_secret
+
+        return cls(
+            host=get_secret("email-credentials", "smtp_host", default="smtp.gmail.com"),
+            port=int(get_secret("email-credentials", "smtp_port", default="587")),
+            username=get_secret("email-credentials", "smtp_username"),
+            password=get_secret("email-credentials", "smtp_password"),
+            sender_email=sender_email or get_secret(
+                "email-credentials", "sender_email", default=""
+            ) or None,
+        )
+
+    def _connect(self) -> smtplib.SMTP:
+        """Open an authenticated SMTP connection."""
+        context = ssl.create_default_context()
+
+        if self.port == 465:
+            server = smtplib.SMTP_SSL(
+                self.host, self.port, timeout=self.timeout, context=context
+            )
+        else:
+            server = smtplib.SMTP(self.host, self.port, timeout=self.timeout)
+            server.ehlo()
+            server.starttls(context=context)
+            server.ehlo()
+
+        server.login(self.username, self.password)
+        return server
+
+    def _build_message(
+        self,
+        to_addresses: List[str],
+        subject: str,
+        html_body: str,
+        text_body: Optional[str],
+        cc_addresses: Optional[List[str]],
+        reply_to_addresses: Optional[List[str]],
+    ) -> EmailMessage:
+        msg = EmailMessage()
+        msg["From"] = self.sender_email
+        msg["To"] = ", ".join(to_addresses)
+        if cc_addresses:
+            msg["Cc"] = ", ".join(cc_addresses)
+        if reply_to_addresses:
+            msg["Reply-To"] = ", ".join(reply_to_addresses)
+        msg["Subject"] = subject
+        msg["Date"] = formatdate(localtime=True)
+        msg["Message-ID"] = make_msgid()
+
+        msg.set_content(text_body or self.strip_html(html_body))
+        msg.add_alternative(html_body, subtype="html")
+        return msg
 
     def send_email(
         self,
@@ -88,7 +163,7 @@ class SESEmailClient:
         reply_to_addresses: Optional[List[str]] = None
     ) -> bool:
         """
-        Send email via AWS SES with retry logic.
+        Send an email, retrying on transient errors.
 
         Args:
             to_addresses: List of recipient email addresses
@@ -96,121 +171,76 @@ class SESEmailClient:
             html_body: HTML version of email body
             text_body: Plain text version (optional, defaults to stripped HTML)
             cc_addresses: List of CC recipients (optional)
-            bcc_addresses: List of BCC recipients (optional)
+            bcc_addresses: List of BCC recipients (optional, not shown in headers)
             reply_to_addresses: List of Reply-To addresses (optional)
 
         Returns:
-            True if email sent successfully, False otherwise
-
-        Example:
-            >>> success = client.send_email(
-            ...     to_addresses=["recipient@example.com"],
-            ...     subject="Test Email",
-            ...     html_body="<p>Hello!</p>",
-            ...     text_body="Hello!"
-            ... )
+            True if the server accepted the message, False otherwise
         """
         if not to_addresses:
             logger.error("Cannot send email: to_addresses is empty")
             return False
 
-        # Build message structure
-        message = {
-            "Subject": {"Data": subject, "Charset": "UTF-8"},
-            "Body": {
-                "Html": {"Data": html_body, "Charset": "UTF-8"}
-            }
-        }
+        msg = self._build_message(
+            to_addresses, subject, html_body, text_body,
+            cc_addresses, reply_to_addresses
+        )
+        recipients = list(to_addresses) + list(cc_addresses or []) + list(bcc_addresses or [])
 
-        # Add text version if provided
-        if text_body:
-            message["Body"]["Text"] = {"Data": text_body, "Charset": "UTF-8"}
-
-        # Build destination
-        destination = {"ToAddresses": to_addresses}
-        if cc_addresses:
-            destination["CcAddresses"] = cc_addresses
-        if bcc_addresses:
-            destination["BccAddresses"] = bcc_addresses
-
-        # Retry loop for throttling
         for attempt in range(self.max_retries):
             try:
-                response = self.ses_client.send_email(
-                    Source=self.sender_email,
-                    Destination=destination,
-                    Message=message,
-                    ReplyToAddresses=reply_to_addresses or []
-                )
+                server = self._connect()
+                try:
+                    refused = server.send_message(msg, to_addrs=recipients)
+                finally:
+                    try:
+                        server.quit()
+                    except smtplib.SMTPException:
+                        pass
 
-                message_id = response.get("MessageId", "unknown")
+                if refused:
+                    logger.error(f"SMTP server refused some recipients: {refused}")
+                    return len(refused) < len(recipients)
+
                 logger.info(
-                    f"Email sent successfully: to={to_addresses[0]}, "
-                    f"subject='{subject}', message_id={message_id}"
+                    f"Email sent successfully: to={to_addresses[0]}, subject='{subject}'"
                 )
                 return True
 
-            except ClientError as e:
-                error_code = e.response["Error"]["Code"]
-                error_message = e.response["Error"]["Message"]
-
-                if error_code == "Throttling":
-                    # Rate limit - retry with exponential backoff
-                    if attempt < self.max_retries - 1:
-                        wait_time = self.retry_delay * (2 ** attempt)
-                        logger.warning(
-                            f"SES throttling (attempt {attempt + 1}/{self.max_retries}), "
-                            f"retrying in {wait_time}s"
-                        )
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        logger.error(
-                            f"SES throttling: max retries exceeded for {to_addresses[0]}"
-                        )
-                        return False
-
-                elif error_code == "MessageRejected":
-                    # Unverified sender/recipient or bounce
-                    logger.error(
-                        f"SES message rejected: {error_message} "
-                        f"(sender={self.sender_email}, to={to_addresses})"
-                    )
-                    return False
-
-                elif error_code == "MailFromDomainNotVerified":
-                    logger.error(
-                        f"SES sender not verified: {self.sender_email}. "
-                        f"Verify sender in AWS SES console."
-                    )
-                    return False
-
-                elif error_code == "ConfigurationSetDoesNotExist":
-                    logger.error(f"SES configuration set not found: {error_message}")
-                    return False
-
-                else:
-                    # Unknown SES error
-                    logger.error(
-                        f"SES client error ({error_code}): {error_message}",
-                        exc_info=True
-                    )
-                    return False
-
-            except BotoCoreError as e:
-                # Network or credential errors
+            except smtplib.SMTPAuthenticationError as e:
+                # Retrying a bad password only risks locking the account
                 logger.error(
-                    f"BotoCore error sending email: {str(e)}",
-                    exc_info=True
+                    f"SMTP authentication failed for {self.username}: {e}. "
+                    f"Check SMTP_USERNAME / SMTP_PASSWORD (Gmail needs an app password)."
                 )
                 return False
 
+            except smtplib.SMTPRecipientsRefused as e:
+                logger.error(f"SMTP recipients refused: {e.recipients}")
+                return False
+
+            except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError,
+                    smtplib.SMTPResponseException, OSError) as e:
+                # 5xx replies are permanent; everything else here is transient
+                code = getattr(e, "smtp_code", None)
+                if code is not None and 500 <= code < 600:
+                    logger.error(f"SMTP permanent error ({code}): {e}")
+                    return False
+
+                if attempt < self.max_retries - 1:
+                    wait_time = self.retry_delay * (2 ** attempt)
+                    logger.warning(
+                        f"SMTP error (attempt {attempt + 1}/{self.max_retries}): {e}, "
+                        f"retrying in {wait_time}s"
+                    )
+                    time.sleep(wait_time)
+                    continue
+
+                logger.error(f"SMTP error: max retries exceeded: {e}")
+                return False
+
             except Exception as e:
-                # Unexpected errors
-                logger.error(
-                    f"Unexpected error sending email: {str(e)}",
-                    exc_info=True
-                )
+                logger.error(f"Unexpected error sending email: {e}", exc_info=True)
                 return False
 
         return False
@@ -218,7 +248,7 @@ class SESEmailClient:
     def send_batch_emails(
         self,
         emails: List[dict],
-        throttle_delay: float = 0.1
+        throttle_delay: float = 0.5
     ) -> dict:
         """
         Send multiple emails with throttling.
@@ -229,21 +259,6 @@ class SESEmailClient:
 
         Returns:
             Dict with 'sent', 'failed', and 'total' counts
-
-        Example:
-            >>> results = client.send_batch_emails([
-            ...     {
-            ...         "to_addresses": ["user1@example.com"],
-            ...         "subject": "Alert 1",
-            ...         "html_body": "<p>Message 1</p>"
-            ...     },
-            ...     {
-            ...         "to_addresses": ["user2@example.com"],
-            ...         "subject": "Alert 2",
-            ...         "html_body": "<p>Message 2</p>"
-            ...     }
-            ... ])
-            >>> print(f"Sent {results['sent']}/{results['total']} emails")
         """
         sent = 0
         failed = 0
@@ -264,95 +279,30 @@ class SESEmailClient:
             else:
                 failed += 1
 
-            # Throttle to avoid rate limits
-            if i < len(emails) - 1:  # Don't sleep after last email
+            if i < len(emails) - 1:
                 time.sleep(throttle_delay)
 
         logger.info(
-            f"Batch send complete: {sent} sent, {failed} failed, "
-            f"{len(emails)} total"
+            f"Batch send complete: {sent} sent, {failed} failed, {len(emails)} total"
         )
 
-        return {
-            "sent": sent,
-            "failed": failed,
-            "total": len(emails)
-        }
+        return {"sent": sent, "failed": failed, "total": len(emails)}
 
-    def verify_sender(self) -> bool:
+    def verify_connection(self) -> bool:
         """
-        Check if sender email is verified in SES.
+        Check that the server is reachable and the credentials are accepted.
 
         Returns:
-            True if sender is verified, False otherwise
-
-        Example:
-            >>> if not client.verify_sender():
-            ...     print("Sender email not verified in SES")
+            True if connect + login succeeded, False otherwise
         """
         try:
-            response = self.ses_client.get_identity_verification_attributes(
-                Identities=[self.sender_email]
-            )
-
-            attrs = response.get("VerificationAttributes", {})
-            status = attrs.get(self.sender_email, {}).get("VerificationStatus")
-
-            verified = status == "Success"
-
-            if verified:
-                logger.info(f"Sender verified: {self.sender_email}")
-            else:
-                logger.warning(
-                    f"Sender NOT verified: {self.sender_email} (status: {status})"
-                )
-
-            return verified
-
-        except ClientError as e:
-            logger.error(
-                f"Error checking sender verification: {e.response['Error']['Message']}",
-                exc_info=True
-            )
+            server = self._connect()
+            server.quit()
+            logger.info(f"SMTP connection verified: {self.host}:{self.port}")
+            return True
+        except Exception as e:
+            logger.error(f"SMTP connection check failed: {e}")
             return False
-
-    def get_send_quota(self) -> dict:
-        """
-        Get SES send quota (max 24h, max per second, sent in 24h).
-
-        Returns:
-            Dict with keys: max_24_hour_send, max_send_rate, sent_last_24_hours
-
-        Example:
-            >>> quota = client.get_send_quota()
-            >>> print(f"Daily quota: {quota['sent_last_24_hours']}/{quota['max_24_hour_send']}")
-        """
-        try:
-            response = self.ses_client.get_send_quota()
-
-            quota = {
-                "max_24_hour_send": response.get("Max24HourSend", 0),
-                "max_send_rate": response.get("MaxSendRate", 0),
-                "sent_last_24_hours": response.get("SentLast24Hours", 0)
-            }
-
-            logger.info(
-                f"SES quota: {quota['sent_last_24_hours']}/{quota['max_24_hour_send']} "
-                f"(rate: {quota['max_send_rate']}/sec)"
-            )
-
-            return quota
-
-        except ClientError as e:
-            logger.error(
-                f"Error getting send quota: {e.response['Error']['Message']}",
-                exc_info=True
-            )
-            return {
-                "max_24_hour_send": 0,
-                "max_send_rate": 0,
-                "sent_last_24_hours": 0
-            }
 
     @staticmethod
     def strip_html(html: str) -> str:
@@ -361,19 +311,11 @@ class SESEmailClient:
 
         Simple tag removal for fallback text body.
 
-        Args:
-            html: HTML string
-
-        Returns:
-            Plain text with tags removed
-
         Example:
-            >>> text = SESEmailClient.strip_html("<p>Hello <b>world</b>!</p>")
-            >>> print(text)  # "Hello world!"
+            >>> SMTPEmailClient.strip_html("<p>Hello <b>world</b>!</p>")
+            'Hello world!'
         """
-        import re
-        # Remove HTML tags
-        text = re.sub(r'<[^>]+>', '', html)
-        # Collapse whitespace
+        text = re.sub(r'<(style|script)[^>]*>.*?</\1>', '', html, flags=re.S | re.I)
+        text = re.sub(r'<[^>]+>', '', text)
         text = re.sub(r'\s+', ' ', text).strip()
         return text

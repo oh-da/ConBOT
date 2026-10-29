@@ -1,7 +1,7 @@
 """
 Email formatter for conference scan notifications.
 
-Formats ScanResult data into emails using templates and sends via SES.
+Formats ScanResult data into emails using templates and sends via SMTP.
 """
 
 from datetime import datetime
@@ -14,7 +14,7 @@ from ..models.conference import (
     Deadline
 )
 from .templates import EmailTemplates
-from .email_client import SESEmailClient
+from .email_client import SMTPEmailClient
 
 logger = logging.getLogger(__name__)
 
@@ -23,11 +23,11 @@ class EmailFormatter:
     """
     Format and send conference scan notification emails.
 
-    Combines ScanResult data with email templates and sends via SES.
+    Combines ScanResult data with email templates and sends via SMTP.
 
     Example:
         >>> formatter = EmailFormatter(
-        ...     ses_client=ses_client,
+        ...     email_client=email_client,
         ...     recipient_email="user@example.com"
         ... )
         >>> formatter.send_scan_notification(
@@ -40,7 +40,7 @@ class EmailFormatter:
 
     def __init__(
         self,
-        ses_client: SESEmailClient,
+        email_client: SMTPEmailClient,
         recipient_email: str,
         templates: Optional[EmailTemplates] = None
     ):
@@ -48,11 +48,11 @@ class EmailFormatter:
         Initialize email formatter.
 
         Args:
-            ses_client: Configured SES email client
+            email_client: Configured SMTP email client
             recipient_email: Default recipient email address
             templates: Email templates (optional, creates new if None)
         """
-        self.ses_client = ses_client
+        self.email_client = email_client
         self.recipient_email = recipient_email
         self.templates = templates or EmailTemplates()
 
@@ -115,10 +115,10 @@ class EmailFormatter:
                 return False
 
             # Generate plain text fallback
-            text_body = SESEmailClient.strip_html(html_body)
+            text_body = SMTPEmailClient.strip_html(html_body)
 
             # Send email
-            success = self.ses_client.send_email(
+            success = self.email_client.send_email(
                 to_addresses=recipients,
                 subject=subject,
                 html_body=html_body,
@@ -317,8 +317,8 @@ class EmailFormatter:
             <ul>
                 <li>Conference website is accessible</li>
                 <li>URL is correct in configuration</li>
-                <li>Databricks cluster has network access</li>
-                <li>AWS credentials are valid</li>
+                <li>The runner / machine has network access</li>
+                <li>Playwright is installed if the site needs JavaScript</li>
             </ul>
         </div>
         <div class="footer">
@@ -344,11 +344,11 @@ Next Action: The system will retry on the next scheduled run.
 If this error persists, check:
 - Conference website is accessible
 - URL is correct in configuration
-- Databricks cluster has network access
-- AWS credentials are valid
+- The runner / machine has network access
+- Playwright is installed if the site needs JavaScript
 """
 
-        success = self.ses_client.send_email(
+        success = self.email_client.send_email(
             to_addresses=recipients,
             subject=subject,
             html_body=html_body,
@@ -367,7 +367,7 @@ If this error persists, check:
         to_addresses: Optional[List[str]] = None
     ) -> bool:
         """
-        Send test email to verify SES configuration.
+        Send test email to verify SMTP configuration.
 
         Args:
             to_addresses: Override recipient addresses (optional)
@@ -377,7 +377,7 @@ If this error persists, check:
 
         Example:
             >>> if formatter.send_test_email():
-            ...     print("SES is configured correctly")
+            ...     print("SMTP is configured correctly")
         """
         recipients = to_addresses or [self.recipient_email]
 
@@ -406,8 +406,8 @@ If this error persists, check:
             </div>
             <p>This test email confirms that:</p>
             <ul>
-                <li>AWS SES credentials are valid</li>
-                <li>Sender email is verified</li>
+                <li>SMTP credentials are valid</li>
+                <li>SMTP server accepted the message</li>
                 <li>Email delivery is functional</li>
                 <li>Templates are rendering correctly</li>
             </ul>
@@ -422,14 +422,14 @@ If this error persists, check:
 Success! Your ConBOT email notification system is working correctly.
 
 This test email confirms that:
-- AWS SES credentials are valid
-- Sender email is verified
+- SMTP credentials are valid
+- SMTP server accepted the message
 - Email delivery is functional
 - Templates are rendering correctly
 
 You're ready to receive conference monitoring alerts."""
 
-        success = self.ses_client.send_email(
+        success = self.email_client.send_email(
             to_addresses=recipients,
             subject=subject,
             html_body=html_body,

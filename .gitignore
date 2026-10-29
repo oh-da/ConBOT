@@ -77,3 +77,8 @@ dmypy.json
 
 # Ruff
 .ruff_cache/
+
+# ConBOT runtime state
+conbot.db
+/state/
+backup_*/

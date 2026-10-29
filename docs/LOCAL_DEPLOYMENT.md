@@ -24,7 +24,7 @@ ConBOT local deployment runs entirely on your personal computer with:
 - **Simple CLI** - `conbot` command for all operations
 - **No cloud costs** - runs 24/7 on your machine
 
-**Cost**: ~$0.50-4/month (AWS SES + optional OpenAI)
+**Cost**: ~$0-4/month (SMTP is free with Gmail etc.; optional OpenAI)
 **vs Databricks**: Save ~$96-120/month
 
 ---
@@ -33,9 +33,9 @@ ConBOT local deployment runs entirely on your personal computer with:
 
 ### Required
 
-1. **Python 3.9+**
+1. **Python 3.10+**
    ```bash
-   python3 --version  # Should be 3.9 or higher
+   python3 --version  # Should be 3.10 or higher
    ```
 
 2. **pip** (Python package installer)
@@ -43,10 +43,9 @@ ConBOT local deployment runs entirely on your personal computer with:
    pip3 --version
    ```
 
-3. **AWS SES** (for email notifications)
-   - AWS account
-   - Verified sender email in SES Console
-   - AWS credentials (access key + secret) OR IAM role
+3. **An SMTP account** (for email notifications)
+   - Gmail with an [app password](https://myaccount.google.com/apppasswords), or any SMTP provider
+   - Server host, port (587 or 465), username, password
 
 ### Optional
 
@@ -116,15 +115,14 @@ nano ~/.conbot/.env
 **Required settings:**
 
 ```bash
-# AWS SES (REQUIRED)
-SES_SENDER_EMAIL=conbot@yourdomain.com
-SES_RECIPIENT_EMAIL=your-email@example.com
-AWS_REGION=us-east-1
-
-# AWS Credentials (if not using IAM role)
-AWS_ACCESS_KEY_ID=AKIA...
-AWS_SECRET_ACCESS_KEY=your-secret-key
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=you@gmail.com
+SMTP_PASSWORD=your-app-password
 ```
+
+`SENDER_EMAIL` (From address) defaults to `SMTP_USERNAME`. Port 465 uses
+implicit TLS; any other port uses STARTTLS.
 
 **Optional settings:**
 
@@ -141,23 +139,13 @@ SIMHASH_THRESHOLD=5  # Change detection sensitivity
 LOG_LEVEL=INFO       # DEBUG, INFO, WARNING, ERROR
 ```
 
-### 2. Verify AWS SES Sender
+### 2. Create an SMTP password
 
-Before ConBOT can send emails, verify your sender email in AWS SES:
+**Gmail**: turn on 2-step verification, then create an app password at
+https://myaccount.google.com/apppasswords and use it as `SMTP_PASSWORD`
+(your normal Google password will be rejected).
 
-1. Go to: https://console.aws.amazon.com/ses/home#/verified-identities
-2. Click "Create identity"
-3. Select "Email address"
-4. Enter your sender email (e.g., conbot@yourdomain.com)
-5. Click "Create identity"
-6. Check your email and click verification link
-
-**Note**: In SES Sandbox mode, you must also verify recipient email.
-
-To request production access (no recipient verification):
-1. AWS SES Console → Account dashboard
-2. Click "Request production access"
-3. Fill out form (usually approved in 24 hours)
+**Other providers**: use the SMTP host/port/credentials from their docs.
 
 ### 3. Test Configuration
 
@@ -483,7 +471,7 @@ chmod 644 ~/.conbot/.env
 
 ### Emails Not Sending
 
-**Check SES verification**:
+**Check SMTP settings**:
 
 ```bash
 # Send test email
@@ -491,10 +479,10 @@ conbot test-email -r your@email.com
 ```
 
 **Common issues**:
-1. Sender email not verified in AWS SES
-2. AWS credentials incorrect
-3. SES in sandbox mode (recipient must be verified)
-4. Wrong AWS region in .env file
+1. Authentication failed: wrong password, or Gmail without an app password
+2. Wrong `SMTP_HOST` / `SMTP_PORT` (587 = STARTTLS, 465 = implicit TLS)
+3. Network or firewall blocking outbound SMTP
+4. Provider limits (Gmail: ~500 messages/day)
 
 ### Database Issues
 
@@ -613,7 +601,7 @@ pip uninstall conbot -y
 
 After successful installation:
 
-1. ✅ **Test email** - Verify AWS SES works
+1. ✅ **Test email** - Verify SMTP works
 2. ✅ **Manual scan** - Test conference scanning
 3. ✅ **Start daemon** - Begin daily monitoring
 4. ✅ **Check logs** - Verify everything works

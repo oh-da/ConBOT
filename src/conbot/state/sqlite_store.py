@@ -24,6 +24,7 @@ from ..db.schema import (
     ConferencesAuditTable,
     ScanHistoryTable,
     serialize_deadlines,
+    simhash_to_db,
     serialize_tracked_links,
     deserialize_deadlines,
     deserialize_tracked_links,
@@ -86,14 +87,14 @@ class SQLiteStore:
     def get_conference_state(
         self,
         conference_id: str,
-        url: str
+        url: Optional[str] = None
     ) -> Optional[ConferenceState]:
         """
         Retrieve current state for a conference.
 
         Args:
             conference_id: Conference identifier
-            url: Primary URL being monitored
+            url: Unused (kept for DeltaStore API compatibility)
 
         Returns:
             ConferenceState object or None if not found
@@ -159,7 +160,7 @@ class SQLiteStore:
                 existing.last_scan_at = state.last_scan_at
                 existing.binary_hash = state.binary_hash
                 existing.filtered_hash = state.filtered_hash
-                existing.simhash_signature = state.simhash_signature
+                existing.simhash_signature = simhash_to_db(state.simhash_signature)
                 existing.current_deadlines = serialize_deadlines(state.current_deadlines)
                 existing.current_summary = state.current_summary
                 existing.tracked_links = serialize_tracked_links(state.tracked_links)
