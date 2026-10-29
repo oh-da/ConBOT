@@ -334,7 +334,7 @@ def import_from_json(
                     row_dict['scan_timestamp'] = datetime.fromisoformat(row_dict['scan_timestamp'])
 
                 record = ConferencesAuditTable(**row_dict)
-                session.add(record)
+                session.merge(record)  # keyed on audit_id, so restoring twice is harmless
 
             session.commit()
             counts['audit'] = len(audit_data)

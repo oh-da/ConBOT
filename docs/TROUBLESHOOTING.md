@@ -103,76 +103,42 @@ databricks fs cp dist/conbot-1.0.0-py3-none-any.whl dbfs:/FileStore/wheels/ --ov
 
 **Symptoms:**
 - No emails received after scans
+- Log shows `SMTP authentication failed`, `SMTP error`, or `Email send failed`
 - Audit log shows `email_sent = false`
 
 **Debug Steps:**
 
-1. **Check SES sender verification**
-   ```python
-   from conbot.notification.email_client import SESEmailClient
-
-   client = SESEmailClient(sender_email="conbot@yourdomain.com")
-   verified = client.verify_sender()
-   print(f"Sender verified: {verified}")
-   ```
-
-2. **Check SES quota**
-   ```python
-   quota = client.get_send_quota()
-   print(quota)
-   # Check if sent_last_24_hours < max_24_hour_send
-   ```
-
-3. **Check AWS credentials**
+1. **Send a test email**
    ```bash
-   # If using IAM role, verify instance profile attached to cluster
-   # If using access keys, verify secrets set correctly
-   databricks secrets list --scope email-credentials
+   conbot test-email -r your@email.com
    ```
 
-4. **Test email manually**
-   ```bash
-   python -m conbot.main --mode=test-email --recipient-email=your@email.com
+2. **Check the connection and login**
+   ```python
+   from conbot.notification.email_client import SMTPEmailClient
+
+   print(SMTPEmailClient.from_env().verify_connection())
    ```
+
+3. **Check the variables are set**: `SMTP_USERNAME`, `SMTP_PASSWORD`
+   (and `SMTP_HOST` / `SMTP_PORT` if not Gmail). In GitHub Actions these are
+   repository secrets / variables.
 
 **Common Causes:**
 
-- **Sender not verified**: Verify sender in AWS SES Console
-- **Sandbox mode**: SES in sandbox only sends to verified recipients
-- **IAM permissions**: Instance profile lacks `ses:SendEmail` permission
-- **Wrong region**: SES operates per-region (check `aws_region` parameter)
+- **Authentication failed**: Gmail needs an app password, not your account password
+- **Wrong port**: 587 = STARTTLS, 465 = implicit TLS
+- **Provider limits**: Gmail allows roughly 500 messages per day
+- **Blocked outbound SMTP**: some networks block ports 25/465/587
 
 ### Issue: Emails go to spam
 
 **Solution:**
 
-1. **Set up SPF record** for your domain:
-   ```
-   v=spf1 include:amazonses.com ~all
-   ```
-
-2. **Set up DKIM** in AWS SES Console:
-   - Navigate to Verified Identities → Your Domain
-   - Generate DKIM Settings
-   - Add CNAME records to DNS
-
-3. **Set up DMARC**:
-   ```
-   _dmarc.yourdomain.com TXT "v=DMARC1; p=quarantine; rua=mailto:dmarc@yourdomain.com"
-   ```
-
-### Issue: Unverified email error
-
-**Symptoms:**
-```
-MessageRejected: Email address is not verified
-```
-
-**Solution:**
-
-If in SES Sandbox mode:
-- Verify both sender AND recipient emails
-- OR request production access (AWS SES Console → Request Production Access)
+- Send from an address your SMTP provider is authorised for (set `SENDER_EMAIL`
+  to your own address, not an arbitrary one)
+- If you use your own domain, set up SPF, DKIM and DMARC with your SMTP provider
+- Mark the first message "Not spam" in your mail client
 
 ---
 

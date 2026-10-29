@@ -8,7 +8,7 @@ Scores candidate URLs based on:
 """
 
 import re
-from typing import List
+from typing import Dict, List
 import logging
 
 logger = logging.getLogger(__name__)

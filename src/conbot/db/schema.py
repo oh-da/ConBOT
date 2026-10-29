@@ -40,6 +40,21 @@ from ..models.conference import (
 Base = declarative_base()
 
 
+# SimHash signatures are unsigned 64-bit; SQLite INTEGER is signed 64-bit.
+def simhash_to_db(value: Optional[int]) -> Optional[int]:
+    """Map an unsigned 64-bit SimHash to the signed range SQLite can store."""
+    if value is None:
+        return None
+    return value - (1 << 64) if value >= (1 << 63) else value
+
+
+def simhash_from_db(value: Optional[int]) -> Optional[int]:
+    """Inverse of simhash_to_db."""
+    if value is None:
+        return None
+    return value + (1 << 64) if value < 0 else value
+
+
 # JSON serialization helpers
 def serialize_deadlines(deadlines: List[Deadline]) -> str:
     """Serialize list of Deadline objects to JSON string."""
@@ -132,7 +147,7 @@ class ConferenceCurrentTable(Base):
             last_scan_at=self.last_scan_at,
             binary_hash=self.binary_hash,
             filtered_hash=self.filtered_hash,
-            simhash_signature=self.simhash_signature,
+            simhash_signature=simhash_from_db(self.simhash_signature),
             current_deadlines=deserialize_deadlines(self.current_deadlines),
             current_summary=self.current_summary,
             tracked_links=deserialize_tracked_links(self.tracked_links),
@@ -153,7 +168,7 @@ class ConferenceCurrentTable(Base):
             last_scan_at=state.last_scan_at,
             binary_hash=state.binary_hash,
             filtered_hash=state.filtered_hash,
-            simhash_signature=state.simhash_signature,
+            simhash_signature=simhash_to_db(state.simhash_signature),
             current_deadlines=serialize_deadlines(state.current_deadlines),
             current_summary=state.current_summary,
             tracked_links=serialize_tracked_links(state.tracked_links),

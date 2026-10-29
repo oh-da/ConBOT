@@ -4,12 +4,14 @@ Main orchestrator for conference tracking bot.
 Entry point for scanning conferences and sending notifications.
 """
 
+import os
 import sys
 import argparse
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 import logging
-from pathlib import Path
+
+from pydantic import HttpUrl, TypeAdapter
 
 from .models.conference import (
     ConferenceState,
@@ -25,16 +27,18 @@ from .extraction.content import ContentExtractor
 from .extraction.dates import DateExtractor
 from .detection.fingerprint import ChangeDetector
 from .llm.client import LLMClient
-from .discovery.link_finder import LinkDiscovery
 from .state.sqlite_store import SQLiteStore
 from .state.transitions import StateTransitionEngine
 from .state.audit import AuditLogger
 from .scheduling.dispatcher import ScheduleDispatcher
-from .scheduling.calculator import ScheduleCalculator
-from .notification.email_client import SESEmailClient
+from .scheduling.calculator import NextRunCalculator
+from .notification.email_client import SMTPEmailClient
 from .notification.formatter import EmailFormatter
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_DB_PATH = "~/.conbot/conbot.db"
+_HTTP_URL = TypeAdapter(HttpUrl)  # Normalises URLs the same way ConferenceState does
 
 
 class ConferenceScanOrchestrator:
@@ -49,6 +53,9 @@ class ConferenceScanOrchestrator:
     5. Update state machine
     6. Send email notifications
 
+    Only the first URL of each conference in conferences.yaml is fetched;
+    ``secondary_urls`` and ``link_discovery`` are not used yet.
+
     Example:
         >>> orchestrator = ConferenceScanOrchestrator(
         ...     config_path="config/conferences.yaml",
@@ -62,10 +69,11 @@ class ConferenceScanOrchestrator:
         config_path: str,
         recipient_email: str,
         sender_email: Optional[str] = None,
-        aws_region: str = "us-east-1",
         llm_api_key: Optional[str] = None,
         db_path: Optional[str] = None,
-        simhash_threshold: int = 5
+        simhash_threshold: int = 5,
+        email_client: Optional[SMTPEmailClient] = None,
+        fetcher: Optional[Fetcher] = None,
     ):
         """
         Initialize orchestrator with configuration.
@@ -73,72 +81,78 @@ class ConferenceScanOrchestrator:
         Args:
             config_path: Path to conferences.yaml
             recipient_email: Email address for notifications
-            sender_email: SES sender email (optional, uses secrets if None)
-            aws_region: AWS region for SES
-            llm_api_key: OpenAI API key (optional, uses secrets if None)
-            db_path: Path to SQLite database (optional, uses default ~/.conbot/conbot.db if None)
+            sender_email: From address (optional, defaults to SENDER_EMAIL / SMTP_USERNAME)
+            llm_api_key: OpenAI API key (optional, uses OPENAI_API_KEY if None)
+            db_path: Path to SQLite database (default: $CONBOT_DB_PATH or ~/.conbot/conbot.db)
             simhash_threshold: Hamming distance threshold for semantic changes
+            email_client: Pre-built email client (default: built from SMTP_* env vars)
+            fetcher: Pre-built fetcher (default: built from conferences.yaml defaults)
         """
         logger.info("Initializing ConferenceScanOrchestrator")
 
-        # Load conference configurations
+        # Load conference configurations (list of dicts, defaults already merged in)
         self.conferences_config = load_conference_config(config_path)
         logger.info(f"Loaded {len(self.conferences_config)} conference configurations")
+        defaults = self.conferences_config[0]
 
         # Initialize components
-        self.fetcher = Fetcher()
-        self.content_extractor = ContentExtractor()
+        self.fetcher = fetcher or Fetcher(
+            throttle_seconds=defaults.get("throttle_seconds", 1.5),
+            timeout_seconds=defaults.get("request_timeout_seconds", 25),
+            max_retries=defaults.get("max_retries", 3),
+            backoff_factor=defaults.get("backoff_seconds", 2),
+        )
         self.date_extractor = DateExtractor()
         self.change_detector = ChangeDetector(simhash_threshold=simhash_threshold)
         self.state_engine = StateTransitionEngine()
-        self.schedule_calculator = ScheduleCalculator()
+        self.schedule_calculator = NextRunCalculator()
 
         # Initialize LLM client (optional)
+        self.llm_client = None
         try:
-            api_key = llm_api_key or get_secret("llm-credentials", "openai-api-key")
-            self.llm_client = LLMClient(api_key=api_key) if api_key else None
-            if self.llm_client:
+            api_key = llm_api_key or get_secret("llm-credentials", "openai-api-key", default="")
+            if api_key:
+                self.llm_client = LLMClient(api_key=api_key)
                 logger.info("LLM client initialized")
         except Exception as e:
             logger.warning(f"LLM client not available: {e}")
-            self.llm_client = None
 
         # Initialize SQLite store
-        import os
-        db_file = db_path or os.path.expanduser("~/.conbot/conbot.db")
+        db_file = db_path or os.getenv("CONBOT_DB_PATH") or DEFAULT_DB_PATH
+        db_file = os.path.expanduser(db_file)
+        os.makedirs(os.path.dirname(os.path.abspath(db_file)), exist_ok=True)
         self.store = SQLiteStore(db_path=db_file)
         logger.info(f"SQLite store initialized: {db_file}")
 
-        # Initialize audit logger
-        self.audit_logger = AuditLogger(delta_store=self.store)
-
-        # Initialize scheduler
+        # Initialize audit logger and scheduler
+        self.audit_logger = AuditLogger(self.store)
         self.dispatcher = ScheduleDispatcher(delta_store=self.store)
 
         # Initialize email client
         try:
-            sender = sender_email or get_secret("email-credentials", "sender-email")
-            self.ses_client = SESEmailClient(
-                sender_email=sender,
-                aws_region=aws_region
-            )
+            self.email_client = email_client or SMTPEmailClient.from_env(sender_email)
             self.email_formatter = EmailFormatter(
-                ses_client=self.ses_client,
+                email_client=self.email_client,
                 recipient_email=recipient_email
             )
-            logger.info(f"Email client initialized: sender={sender}")
         except Exception as e:
             logger.error(f"Failed to initialize email client: {e}")
             raise
 
+        # Make sure every conference in the YAML has a state row
+        self.initialize_conferences()
+
         logger.info("ConferenceScanOrchestrator initialization complete")
 
-    def run_daily_scan(self) -> dict:
+    def run_daily_scan(self, force: bool = False) -> dict:
         """
-        Run daily scheduled scan for all due conferences.
+        Run scheduled scan for all conferences that are due.
 
-        Queries Delta store for conferences where next_run_at <= now,
+        Queries the store for conferences where next_run_at <= now,
         scans each one, updates state, and sends notifications.
+
+        Args:
+            force: If True, scan every active conference regardless of next_run_at
 
         Returns:
             Dict with summary statistics
@@ -151,69 +165,33 @@ class ConferenceScanOrchestrator:
         logger.info("Starting daily conference scan")
         logger.info("=" * 80)
 
-        # Get conferences due for scanning
-        due_conferences = self.dispatcher.get_conferences_due_for_scan()
+        results = {"scanned": 0, "succeeded": 0, "failed": 0}
+
+        if force:
+            due_conferences = [c for c in self.store.get_all_conferences() if c.is_active]
+        else:
+            due_conferences = self.dispatcher.get_conferences_to_scan()
 
         if not due_conferences:
             logger.info("No conferences due for scanning")
-            return {
-                "scanned": 0,
-                "succeeded": 0,
-                "failed": 0,
-                "changes_detected": 0,
-                "deadlines_found": 0,
-                "emails_sent": 0
-            }
+            return results
 
         logger.info(f"Found {len(due_conferences)} conferences due for scanning")
 
-        # Scan each conference
-        results = {
-            "scanned": 0,
-            "succeeded": 0,
-            "failed": 0,
-            "changes_detected": 0,
-            "deadlines_found": 0,
-            "emails_sent": 0
-        }
-
-        for conference_state in due_conferences:
-            try:
-                success = self.scan_conference(conference_state)
-
+        try:
+            for conference_state in due_conferences:
                 results["scanned"] += 1
-
-                if success:
+                if self.scan_conference(conference_state):
                     results["succeeded"] += 1
                 else:
                     results["failed"] += 1
+        finally:
+            self.fetcher.close()
 
-            except Exception as e:
-                logger.error(
-                    f"Unexpected error scanning {conference_state.conference_id}: {e}",
-                    exc_info=True
-                )
-                results["scanned"] += 1
-                results["failed"] += 1
-
-                # Send error notification
-                try:
-                    self.email_formatter.send_error_notification(
-                        conference_id=conference_state.conference_id,
-                        conference_name=conference_state.conference_name,
-                        error_message=str(e),
-                        url=str(conference_state.url)
-                    )
-                except Exception as email_error:
-                    logger.error(f"Failed to send error notification: {email_error}")
-
-        logger.info("=" * 80)
         logger.info(
             f"Daily scan complete: {results['succeeded']} succeeded, "
             f"{results['failed']} failed, {results['scanned']} total"
         )
-        logger.info("=" * 80)
-
         return results
 
     def scan_conference(self, conference_state: ConferenceState) -> bool:
@@ -227,8 +205,11 @@ class ConferenceScanOrchestrator:
         4. Extract dates if changed
         5. Call LLM for summary if changed
         6. Determine new state
-        7. Update Delta tables
+        7. Update store and audit trail
         8. Send email notification
+
+        The first scan of a conference is a baseline: it only counts as a
+        change if it already finds deadlines.
 
         Args:
             conference_state: Current state of conference
@@ -237,68 +218,71 @@ class ConferenceScanOrchestrator:
             True if scan completed successfully, False otherwise
         """
         conference_id = conference_state.conference_id
+        conf_config = self._get_conference_config(conference_id)
+        conference_state = conference_state.model_copy(
+            update={"conference_name": conf_config.get("name", conference_id)}
+        )
         logger.info(f"Scanning {conference_id} ({conference_state.watch_mode.value} mode)")
 
         start_time = datetime.now()
 
         try:
             # Step 1: Fetch content
-            html, fetch_method = self.fetcher.fetch(str(conference_state.url))
-
-            # Step 2: Extract content
-            extraction_result = self.content_extractor.extract_all(
-                html=html,
-                url=str(conference_state.url)
+            force_playwright = (
+                bool(conf_config.get("js_required"))
+                or conf_config.get("fetch_mode") == "playwright"
+            )
+            html, fetch_method = self.fetcher.fetch(
+                str(conference_state.url), force_playwright=force_playwright
             )
 
-            main_content = extraction_result["main_content"]
-            filtered_content = extraction_result["filtered_content"]
-            snippets = extraction_result["relevant_snippets"]
+            # Step 2: Extract content
+            extractor = ContentExtractor(keyword_groups=conf_config.get("keyword_groups", {}))
+            main_content, snippets = extractor.extract(html)
+            filtered_content = extractor.get_filtered_content(html)
 
             # Step 3: Generate fingerprints
-            new_fingerprints = self.change_detector.generate_fingerprints(
+            new_fingerprints = self.change_detector.compute_fingerprints(
                 raw_html=html,
                 filtered_content=filtered_content
             )
 
             # Step 4: Detect changes
-            if conference_state.binary_hash:
+            is_baseline = conference_state.binary_hash is None
+            hamming_dist = None
+            if is_baseline:
+                change_detected = False
+                change_type = ChangeType.NONE
+            else:
                 old_fingerprints = {
                     "binary_hash": conference_state.binary_hash,
                     "filtered_hash": conference_state.filtered_hash,
                     "simhash_signature": conference_state.simhash_signature
                 }
-
                 change_detected, change_type_str, hamming_dist = self.change_detector.detect_change(
                     new_fingerprints=new_fingerprints,
                     old_fingerprints=old_fingerprints
                 )
-
                 change_type = ChangeType[change_type_str]
-            else:
-                # First scan - treat as change to get baseline
-                change_detected = False
-                change_type = ChangeType.NONE
-                hamming_dist = None
 
             logger.info(
-                f"{conference_id}: change_detected={change_detected}, "
+                f"{conference_id}: baseline={is_baseline}, change_detected={change_detected}, "
                 f"type={change_type.value}, hamming_dist={hamming_dist}"
             )
 
-            # Step 5: Extract dates if changed (or if no deadlines known)
+            # Step 5: Extract dates (on change, and on the baseline scan)
             deadlines = []
-            if change_detected or not conference_state.current_deadlines:
-                conf_config = self._get_conference_config(conference_id)
-                keywords = conf_config.get("cfp_keywords", [])
-
+            if change_detected or is_baseline:
                 deadlines = self.date_extractor.extract_deadlines(
-                    text=main_content,
-                    relevant_snippets=snippets,
-                    context_keywords=keywords
+                    main_text=main_content,
+                    snippets=snippets
                 )
-
                 logger.info(f"{conference_id}: Extracted {len(deadlines)} deadlines")
+
+                # A baseline that already shows deadlines is worth reporting
+                if is_baseline and deadlines:
+                    change_detected = True
+                    change_type = ChangeType.BINARY
 
             # Step 6: LLM summary (if changed and LLM available)
             summary = None
@@ -306,33 +290,15 @@ class ConferenceScanOrchestrator:
 
             if change_detected and self.llm_client:
                 try:
-                    conf_config = self._get_conference_config(conference_id)
-
-                    if deadlines:
-                        # Deadlines found - get full analysis
-                        cfp_keywords = conf_config.get("cfp_keywords", [])
-                        summary_data = self.llm_client.analyze_change(
-                            conference_id=conference_id,
-                            conference_name=conference_state.conference_name,
-                            snippets=snippets,
-                            deadlines=deadlines,
-                            keywords=cfp_keywords
-                        )
-                        summary = summary_data.get("summary", "")
-                    else:
-                        # No deadlines - check if it's CFP-related
-                        no_dates_keywords = conf_config.get("no_dates_keywords", [])
-                        analysis = self.llm_client.analyze_no_dates_change(
-                            conference_id=conference_id,
-                            conference_name=conference_state.conference_name,
-                            snippets=snippets,
-                            keywords=no_dates_keywords
-                        )
-                        summary = analysis.get("summary", "")
-
+                    summary, _meta = self.llm_client.analyze_change(
+                        conference_id=conference_id,
+                        conference_name=conference_state.conference_name,
+                        snippets=snippets,
+                        deadlines=deadlines,
+                        keywords=conf_config.get("cfp_keywords", [])
+                    )
                     llm_called = True
                     logger.info(f"{conference_id}: LLM summary generated")
-
                 except Exception as e:
                     logger.warning(f"{conference_id}: LLM call failed: {e}")
 
@@ -342,7 +308,7 @@ class ConferenceScanOrchestrator:
             scan_result = ScanResult(
                 conference_id=conference_id,
                 url=str(conference_state.url),
-                scan_timestamp=datetime.now(),
+                scan_timestamp=start_time,
                 main_content=main_content[:5000],  # Truncate for storage
                 relevant_snippets=snippets[:50],  # Limit snippets
                 change_detected=change_detected,
@@ -355,7 +321,7 @@ class ConferenceScanOrchestrator:
                 llm_api_called=llm_called
             )
 
-            # Step 8: Determine new state
+            # Step 8: Determine new state and next run
             previous_mode = conference_state.watch_mode
 
             new_mode, transition_reason = self.state_engine.determine_new_mode(
@@ -364,47 +330,41 @@ class ConferenceScanOrchestrator:
             )
 
             logger.info(
-                f"{conference_id}: State transition: {previous_mode.value} → {new_mode.value} "
+                f"{conference_id}: State transition: {previous_mode.value} -> {new_mode.value} "
                 f"(reason: {transition_reason})"
             )
 
-            # Step 9: Calculate next run time
-            next_run_at = self.schedule_calculator.calculate_next_run(new_mode)
+            now = datetime.now()
+            # Midnight, so the conference is due at the start of that day's run
+            next_run_at = self.schedule_calculator.calculate_next_run(
+                new_mode, base_time=now, hour=0, minute=0
+            )
 
-            # Step 10: Update conference state
-            updated_state = ConferenceState(
-                conference_id=conference_id,
-                conference_name=conference_state.conference_name,
-                url=conference_state.url,
-                watch_mode=new_mode,
-                next_run_at=next_run_at,
-                last_scan_at=datetime.now(),
-                binary_hash=new_fingerprints["binary_hash"],
-                filtered_hash=new_fingerprints["filtered_hash"],
-                simhash_signature=new_fingerprints["simhash_signature"],
-                current_deadlines=deadlines if deadlines else conference_state.current_deadlines,
-                current_summary=summary if summary else conference_state.current_summary,
-                tracked_links=conference_state.tracked_links,  # TODO: Update via link discovery
-                consecutive_no_change_count=(
-                    conference_state.consecutive_no_change_count + 1 if not change_detected else 0
+            # Step 9: Update conference state
+            updated_state = conference_state.model_copy(update={
+                "watch_mode": new_mode,
+                "next_run_at": next_run_at,
+                "last_scan_at": now,
+                "binary_hash": new_fingerprints["binary_hash"],
+                "filtered_hash": new_fingerprints["filtered_hash"],
+                "simhash_signature": new_fingerprints["simhash_signature"],
+                "current_deadlines": deadlines if deadlines else conference_state.current_deadlines,
+                "current_summary": summary if summary else conference_state.current_summary,
+                "consecutive_no_change_count": (
+                    0 if change_detected or is_baseline
+                    else conference_state.consecutive_no_change_count + 1
                 ),
-                updated_at=datetime.now()
-            )
+                "consecutive_error_count": 0,
+                "updated_at": now,
+            })
 
-            self.delta_store.upsert_conference_state(updated_state)
-            logger.info(f"{conference_id}: State updated in Delta table")
+            self.store.upsert_conference(updated_state)
+            self.store.update_conference(conference_id, str(updated_state.url), {"last_error": None})
+            logger.info(f"{conference_id}: State updated")
 
-            # Step 11: Log to audit trail
-            self.audit_logger.log_scan(
-                conference_state=updated_state,
-                scan_result=scan_result,
-                previous_mode=previous_mode,
-                transition_reason=transition_reason
-            )
-
-            # Step 12: Send email notification
+            # Step 10: Send email notification
             should_send, email_type = self.state_engine.should_send_email(
-                old_mode=previous_mode,
+                current_mode=previous_mode,
                 new_mode=new_mode,
                 scan_result=scan_result
             )
@@ -423,6 +383,17 @@ class ConferenceScanOrchestrator:
                 else:
                     logger.error(f"{conference_id}: Email send failed")
 
+            # Step 11: Log to audit trail
+            self.audit_logger.log_scan(
+                conference_state=updated_state,
+                scan_result=scan_result,
+                previous_watch_mode=previous_mode,
+                new_watch_mode=new_mode,
+                transition_reason=transition_reason,
+                email_sent=email_sent,
+                email_type=email_type if should_send else None
+            )
+
             logger.info(
                 f"{conference_id}: Scan complete (duration: {scan_duration:.2f}s, "
                 f"email_sent: {email_sent})"
@@ -431,11 +402,52 @@ class ConferenceScanOrchestrator:
             return True
 
         except Exception as e:
-            logger.error(
-                f"Error scanning {conference_id}: {e}",
-                exc_info=True
-            )
+            logger.error(f"Error scanning {conference_id}: {e}", exc_info=True)
+            self._record_failure(conference_state, e, start_time)
             return False
+
+    def _record_failure(
+        self,
+        conference_state: ConferenceState,
+        error: Exception,
+        started_at: datetime
+    ) -> None:
+        """
+        Record a failed scan: bump the error counter, audit it, and email.
+
+        next_run_at is left alone, so the conference is retried on the next run.
+        To avoid a daily email for a site that stays down, only the first
+        failure and every 7th consecutive failure are emailed.
+        """
+        conference_id = conference_state.conference_id
+        error_count = conference_state.consecutive_error_count + 1
+
+        try:
+            self.store.update_conference(
+                conference_id,
+                str(conference_state.url),
+                {"consecutive_error_count": error_count, "last_error": str(error)[:1000]}
+            )
+            self.audit_logger.log_error(
+                conference_id=conference_id,
+                url=str(conference_state.url),
+                error_message=str(error),
+                previous_watch_mode=conference_state.watch_mode,
+                started_at=started_at
+            )
+        except Exception as store_error:
+            logger.error(f"{conference_id}: Failed to record scan failure: {store_error}")
+
+        if error_count == 1 or error_count % 7 == 0:
+            try:
+                self.email_formatter.send_error_notification(
+                    conference_id=conference_id,
+                    conference_name=conference_state.conference_name or conference_id,
+                    error_message=str(error),
+                    url=str(conference_state.url)
+                )
+            except Exception as email_error:
+                logger.error(f"Failed to send error notification: {email_error}")
 
     def scan_single_conference(
         self,
@@ -457,76 +469,80 @@ class ConferenceScanOrchestrator:
         """
         logger.info(f"Manual scan requested for {conference_id}")
 
-        # Get current state
-        conference_state = self.delta_store.get_conference_state(conference_id)
+        conference_state = self.store.get_conference_state(conference_id)
 
         if not conference_state:
             logger.error(f"Conference not found: {conference_id}")
             return False
 
-        # Check if due (unless forced)
-        if not force:
-            if conference_state.next_run_at > datetime.now():
-                logger.warning(
-                    f"{conference_id} not due until {conference_state.next_run_at}. "
-                    f"Use --force to scan anyway."
-                )
-                return False
+        if not force and conference_state.next_run_at > datetime.now():
+            logger.warning(
+                f"{conference_id} not due until {conference_state.next_run_at}. "
+                f"Use --force to scan anyway."
+            )
+            return False
 
-        return self.scan_conference(conference_state)
+        try:
+            return self.scan_conference(conference_state)
+        finally:
+            self.fetcher.close()
 
     def initialize_conferences(self) -> int:
         """
-        Initialize conference states in Delta table from config.
+        Create state rows for conferences in conferences.yaml that have none,
+        and deactivate rows for conferences no longer in the YAML.
 
-        Creates initial ConferenceState records for all conferences
-        in conferences.yaml if they don't exist.
+        If the primary URL of an existing conference changed in the YAML, the
+        stored URL is updated and fingerprints are cleared so the next scan
+        takes a fresh baseline.
 
         Returns:
-            Number of conferences initialized
-
-        Example:
-            >>> count = orchestrator.initialize_conferences()
-            >>> print(f"Initialized {count} conferences")
+            Number of conferences newly initialized
         """
-        logger.info("Initializing conference states from config")
-
         initialized = 0
 
         for conf in self.conferences_config:
             conference_id = conf["id"]
+            url = conf["primary_url"]
 
-            # Check if already exists
-            existing = self.delta_store.get_conference_state(conference_id)
+            existing = self.store.get_conference_state(conference_id)
 
             if existing:
-                logger.info(f"{conference_id}: Already initialized, skipping")
+                if str(existing.url) != str(_HTTP_URL.validate_python(url)):
+                    logger.info(f"{conference_id}: URL changed in config, resetting baseline")
+                    self.store.update_conference(conference_id, url, {
+                        "url": url,
+                        "binary_hash": None,
+                        "filtered_hash": None,
+                        "simhash_signature": None,
+                    })
                 continue
 
-            # Create initial state
-            initial_state = ConferenceState(
+            self.store.upsert_conference(ConferenceState(
                 conference_id=conference_id,
-                conference_name=conf["name"],
-                url=conf["primary_url"],
+                url=url,
                 watch_mode=WatchMode.MONTHLY,
                 next_run_at=datetime.now(),  # Scan immediately
-                last_scan_at=None,
-                binary_hash=None,
-                filtered_hash=None,
-                simhash_signature=None,
-                current_deadlines=[],
-                current_summary=None,
-                tracked_links=[],
-                consecutive_no_change_count=0,
-                updated_at=datetime.now()
-            )
-
-            self.delta_store.upsert_conference_state(initial_state)
+            ))
 
             initialized += 1
             logger.info(f"{conference_id}: Initialized in MONTHLY mode")
 
-        logger.info(f"Initialized {initialized} conferences")
+        # Conferences removed from the YAML stop being scanned (and resume if re-added)
+        configured_ids = {conf["id"] for conf in self.conferences_config}
+        for state in self.store.get_all_conferences():
+            should_be_active = state.conference_id in configured_ids
+            if state.is_active != should_be_active:
+                logger.info(
+                    f"{state.conference_id}: "
+                    f"{'re-activated' if should_be_active else 'deactivated (not in config)'}"
+                )
+                self.store.update_conference(
+                    state.conference_id, str(state.url), {"is_active": should_be_active}
+                )
+
+        if initialized:
+            logger.info(f"Initialized {initialized} conferences")
         return initialized
 
     def _get_conference_config(self, conference_id: str) -> dict:
@@ -576,6 +592,12 @@ def main():
     )
 
     parser.add_argument(
+        "--db-path",
+        default=None,
+        help="Path to SQLite database (default: $CONBOT_DB_PATH or ~/.conbot/conbot.db)"
+    )
+
+    parser.add_argument(
         "--mode",
         choices=["daily", "manual", "initialize", "test-email"],
         default="daily",
@@ -590,7 +612,7 @@ def main():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Force scan even if not due (manual mode)"
+        help="Force scan even if not due"
     )
 
     parser.add_argument(
@@ -613,7 +635,9 @@ def main():
     setup_logging(level=args.log_level)
 
     # Get recipient email
-    recipient_email = args.recipient_email or get_secret("email-credentials", "recipient-email")
+    recipient_email = args.recipient_email or get_secret(
+        "email-credentials", "recipient-email", default=""
+    )
 
     if not recipient_email:
         logger.error("Recipient email not provided (use --recipient-email or set secret)")
@@ -624,6 +648,7 @@ def main():
         orchestrator = ConferenceScanOrchestrator(
             config_path=args.config,
             recipient_email=recipient_email,
+            db_path=args.db_path,
             simhash_threshold=args.simhash_threshold
         )
 
@@ -659,7 +684,7 @@ def main():
                 sys.exit(1)
 
         elif args.mode == "daily":
-            results = orchestrator.run_daily_scan()
+            results = orchestrator.run_daily_scan(force=args.force)
 
             logger.info(f"Daily scan results: {results}")
 

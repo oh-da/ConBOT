@@ -69,7 +69,7 @@ def daemon():
 @click.option('--recipient-email', '-r', required=True,
               help='Email address for notifications')
 @click.option('--sender-email', '-s', default=None,
-              help='SES sender email (default: from env)')
+              help='From address (default: SENDER_EMAIL or SMTP_USERNAME)')
 @click.option('--db-path', '-d', default=str(DEFAULT_DB_PATH),
               help='Path to SQLite database')
 @click.option('--pid-file', '-p', default=str(DEFAULT_PID_FILE),
@@ -253,7 +253,7 @@ def logs(pid_file, log_file, lines, follow):
 @click.option('--recipient-email', '-r', required=True,
               help='Email address for notifications')
 @click.option('--sender-email', '-s', default=None,
-              help='SES sender email (default: from env)')
+              help='From address (default: SENDER_EMAIL or SMTP_USERNAME)')
 @click.option('--db-path', '-d', default=str(DEFAULT_DB_PATH),
               help='Path to SQLite database')
 @click.option('--all', 'scan_all', is_flag=True,
@@ -281,12 +281,15 @@ def scan(config, recipient_email, sender_email, db_path, scan_all, conference_id
 
         if scan_all:
             click.echo("Scanning all conferences...")
-            results = orchestrator.run_daily_scan()
+            results = orchestrator.run_daily_scan(force=force)
 
             click.echo("\nScan Results:")
             click.echo(f"  Scanned: {results['scanned']}")
             click.echo(f"  Succeeded: {results['succeeded']}")
             click.echo(f"  Failed: {results['failed']}")
+
+            if results['failed']:
+                sys.exit(1)
 
         elif conference_id:
             click.echo(f"Scanning conference: {conference_id}")
@@ -378,13 +381,14 @@ def backup(db_path, output_dir):
 def restore(db_path, current, audit, history):
     """Restore database from JSON files."""
     try:
-        from .db.migrations import import_from_json
+        from .db.migrations import import_from_json, initialize_database
 
         if not any([current, audit, history]):
             click.echo("✗ Must specify at least one JSON file to restore", err=True)
             sys.exit(1)
 
         click.echo(f"Restoring database: {db_path}")
+        initialize_database(db_path)  # restore into a brand-new file must work
         counts = import_from_json(
             db_path,
             current_file=current,
@@ -473,9 +477,9 @@ def show(config):
         click.echo()
 
         for conf in conferences:
-            click.echo(f"  • {conf.id}")
-            click.echo(f"    Name: {conf.name}")
-            click.echo(f"    URL: {conf.url}")
+            click.echo(f"  • {conf['id']}")
+            click.echo(f"    Name: {conf['name']}")
+            click.echo(f"    URL: {conf['primary_url']}")
             click.echo()
 
     except Exception as e:
@@ -512,7 +516,7 @@ def init_conferences(config, db_path):
         from .utils.config import load_conference_config
         from .state.sqlite_store import SQLiteStore
         from .models.conference import ConferenceState, WatchMode
-        from datetime import datetime, timedelta
+        from datetime import datetime
 
         click.echo("Loading configuration...")
         conferences = load_conference_config(config)
@@ -520,21 +524,24 @@ def init_conferences(config, db_path):
         click.echo("Initializing database...")
         store = SQLiteStore(db_path=db_path)
 
+        added = 0
         for conf in conferences:
-            # Create initial state
-            state = ConferenceState(
-                conference_id=conf.id,
-                url=conf.url,
+            if store.get_conference_state(conf['id']):
+                click.echo(f"  - Already initialized: {conf['id']}")
+                continue
+
+            store.upsert_conference(ConferenceState(
+                conference_id=conf['id'],
+                url=conf['primary_url'],
                 watch_mode=WatchMode.MONTHLY,
                 next_run_at=datetime.now(),  # Scan immediately
                 is_active=True,
-            )
-
-            store.upsert_conference(state)
-            click.echo(f"  ✓ Initialized: {conf.id}")
+            ))
+            added += 1
+            click.echo(f"  ✓ Initialized: {conf['id']}")
 
         store.close()
-        click.echo(f"\n✓ Initialized {len(conferences)} conferences")
+        click.echo(f"\n✓ Initialized {added} new conferences ({len(conferences)} in config)")
 
     except Exception as e:
         click.echo(f"✗ Initialization failed: {e}", err=True)
@@ -549,29 +556,26 @@ def init_conferences(config, db_path):
 @click.option('--recipient-email', '-r', required=True,
               help='Email address to send test to')
 @click.option('--sender-email', '-s', default=None,
-              help='SES sender email (default: from env)')
+              help='From address (default: SENDER_EMAIL or SMTP_USERNAME)')
 def test_email(recipient_email, sender_email):
-    """Send a test email via AWS SES."""
+    """Send a test email via SMTP."""
     try:
-        from .notification.email_client import SESEmailClient
-        from .utils.secrets import get_secret
+        from .notification.email_client import SMTPEmailClient
 
-        sender = sender_email or get_secret("email-credentials", "sender-email")
+        client = SMTPEmailClient.from_env(sender_email)
 
-        click.echo(f"Sending test email...")
-        click.echo(f"  From: {sender}")
+        click.echo("Sending test email...")
+        click.echo(f"  Server: {client.host}:{client.port}")
+        click.echo(f"  From: {client.sender_email}")
         click.echo(f"  To: {recipient_email}")
 
-        client = SESEmailClient(sender_email=sender)
-
-        # Send test email
         success = client.send_email(
-            to_email=recipient_email,
+            to_addresses=[recipient_email],
             subject="ConBOT Test Email",
             html_body="""
             <h1>ConBOT Test Email</h1>
             <p>This is a test email from ConBOT.</p>
-            <p>If you received this, AWS SES is configured correctly!</p>
+            <p>If you received this, SMTP is configured correctly!</p>
             <p><em>Sent at: """ + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + """</em></p>
             """
         )

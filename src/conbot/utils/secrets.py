@@ -86,24 +86,24 @@ def get_secret(scope: str, key: str, default: Optional[str] = None) -> str:
     )
 
 
-def get_aws_ses_credentials() -> dict:
+def get_smtp_settings() -> dict:
     """
-    Get AWS SES credentials from secrets.
+    Get SMTP settings from secrets.
 
     Returns:
-        Dictionary with 'access_key_id', 'secret_access_key', 'region', 'sender_email'
-
-    Note:
-        AWS credentials (access_key_id, secret_access_key) are optional if using IAM role.
+        Dictionary with 'host', 'port', 'username', 'password', 'sender_email'
+        (sender_email falls back to the username)
 
     Raises:
-        SecretsError: If required credentials are missing
+        SecretsError: If SMTP_USERNAME or SMTP_PASSWORD is missing
     """
+    username = get_secret("email-credentials", "smtp_username")
     return {
-        'access_key_id': get_secret("email-credentials", "aws_access_key_id", default=None),
-        'secret_access_key': get_secret("email-credentials", "aws_secret_access_key", default=None),
-        'region': get_secret("email-credentials", "aws_region", default="us-east-1"),
-        'sender_email': get_secret("email-credentials", "sender_email"),
+        'host': get_secret("email-credentials", "smtp_host", default="smtp.gmail.com"),
+        'port': int(get_secret("email-credentials", "smtp_port", default="587")),
+        'username': username,
+        'password': get_secret("email-credentials", "smtp_password"),
+        'sender_email': get_secret("email-credentials", "sender_email", default=username),
     }
 
 

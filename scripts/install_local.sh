@@ -107,22 +107,22 @@ cat > "$CONBOT_DIR/.env" << 'EOF'
 # Required for local deployment
 
 # ============================================================================
-# AWS SES Configuration (REQUIRED)
+# Email via SMTP (REQUIRED)
 # ============================================================================
 
-# Verified sender email address in AWS SES
-# Must be verified in AWS SES Console before use
-SES_SENDER_EMAIL=conbot@yourdomain.com
+# SMTP (any provider: Gmail, Outlook, Fastmail, Mailgun, ...)
+# Gmail: enable 2-step verification, then create an "App password" at
+# https://myaccount.google.com/apppasswords and use that as SMTP_PASSWORD.
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587          # 587 = STARTTLS, 465 = implicit TLS
+SMTP_USERNAME=you@gmail.com
+SMTP_PASSWORD=your-app-password
 
-# Recipient email for notifications
-SES_RECIPIENT_EMAIL=your-email@example.com
+# From address (optional, defaults to SMTP_USERNAME)
+# SENDER_EMAIL=you@gmail.com
 
-# AWS region for SES (default: us-east-1)
-AWS_REGION=us-east-1
-
-# AWS credentials (optional if using IAM role)
-# AWS_ACCESS_KEY_ID=AKIA...
-# AWS_SECRET_ACCESS_KEY=your-secret-key
+# Where alerts go (used by `python -m conbot.main`; the CLI takes -r instead)
+# RECIPIENT_EMAIL=you@example.com
 
 # ============================================================================
 # OpenAI LLM Configuration (OPTIONAL)
@@ -230,12 +230,11 @@ echo "1. Edit configuration file with your credentials:"
 echo -e "   ${BLUE}nano $CONBOT_DIR/.env${NC}"
 echo ""
 echo "   Required settings:"
-echo "   - SES_SENDER_EMAIL (must be verified in AWS SES)"
-echo "   - SES_RECIPIENT_EMAIL (your email address)"
-echo "   - AWS credentials (if not using IAM role)"
+echo "   - SMTP_USERNAME and SMTP_PASSWORD (Gmail needs an app password)"
+echo "   - SMTP_HOST / SMTP_PORT if you are not using Gmail"
 echo ""
-echo "2. Verify AWS SES sender email in AWS Console:"
-echo -e "   ${BLUE}https://console.aws.amazon.com/ses/home#/verified-identities${NC}"
+echo "2. Create an app password (Gmail):"
+echo -e "   ${BLUE}https://myaccount.google.com/apppasswords${NC}"
 echo ""
 echo "3. Test email configuration:"
 echo -e "   ${BLUE}conbot test-email -r your-email@example.com${NC}"
