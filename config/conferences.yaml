@@ -162,43 +162,6 @@ conferences:
       max_discovered_urls: 25
       require_same_domain: true
 
-  - id: itf_summit
-    name: "ITF Summit (OECD)"
-    primary_domain: "itf-oecd.org"
-    urls:
-      - "https://www.itf-oecd.org/summit"
-    secondary_urls:
-      - "https://www.itf-oecd.org/news"
-      - "https://www.itf-oecd.org/press"
-      - "https://www.itf-oecd.org/events"
-    fetch_mode: auto
-    js_required: false
-    link_discovery:
-      enabled: true
-      seed_urls:
-        - "https://www.itf-oecd.org/summit"
-        - "https://www.itf-oecd.org/news"
-        - "https://www.itf-oecd.org/events"
-      include_if_url_contains:
-        - "summit"
-        - "call"
-        - "proposal"
-        - "paper"
-        - "abstract"
-        - "submission"
-        - "deadline"
-        - "dates"
-      include_if_anchor_contains:
-        - "summit"
-        - "call for"
-        - "submit"
-        - "proposal"
-        - "paper"
-        - "abstract"
-        - "deadline"
-        - "important dates"
-      max_discovered_urls: 25
-
   - id: tra
     name: "Transport Research Arena (TRA)"
     primary_domain: "traconference.eu"
