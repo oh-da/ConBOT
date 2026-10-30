@@ -186,7 +186,10 @@ class TestScanFlow:
         assert state.binary_hash is not None
         assert state.next_run_at > datetime.now() + timedelta(days=28)
         assert state.next_run_at.hour == 0
-        assert all("No Changes" in m["subject"] for m in mailer.sent)
+        assert len(mailer.sent) == 1  # one report for the whole run
+        assert "2 no change" in mailer.sent[0]["subject"]
+        assert "Alpha Summit" in mailer.sent[0]["html"]
+        assert "Beta Congress" in mailer.sent[0]["html"]
 
     def test_baseline_with_deadlines_goes_urgent_and_emails_dates(self, env):
         make, fetcher, mailer = env
@@ -199,17 +202,21 @@ class TestScanFlow:
         assert state.watch_mode == WatchMode.URGENT
         assert len(state.current_deadlines) == 1
         assert state.next_run_at < datetime.now() + timedelta(days=2)
-        alpha_mail = [m for m in mailer.sent if "Alpha Summit" in m["subject"]]
-        assert len(alpha_mail) == 1
-        assert "DEADLINES PUBLISHED" in alpha_mail[0]["subject"]
-        assert alpha_mail[0]["to"] == ["me@example.org"]
+        assert len(mailer.sent) == 1
+        report = mailer.sent[0]
+        assert report["subject"].startswith("🚨")
+        assert "1 deadlines published, 1 no change" in report["subject"]
+        assert "Deadlines published" in report["html"]
+        assert report["to"] == ["me@example.org"]
 
     def test_only_due_conferences_are_scanned(self, env):
-        make, _, _ = env
+        make, _, mailer = env
         orch = make()
         orch.run_daily_scan()
+        mailer.sent.clear()
 
         assert orch.run_daily_scan()["scanned"] == 0
+        assert mailer.sent == []  # nothing scanned, nothing to report
 
     def test_unchanged_page_is_no_change(self, env):
         make, _, mailer = env
@@ -220,7 +227,7 @@ class TestScanFlow:
         assert orch.scan_single_conference("alpha", force=True)
 
         assert _state(orch, "alpha").consecutive_no_change_count == 1
-        assert "No Changes" in mailer.sent[0]["subject"]
+        assert "1 no change" in mailer.sent[0]["subject"]
 
     def test_change_without_dates_goes_biweekly(self, env):
         make, fetcher, mailer = env
@@ -232,7 +239,7 @@ class TestScanFlow:
         assert orch.scan_single_conference("alpha", force=True)
 
         assert _state(orch, "alpha").watch_mode == WatchMode.BIWEEKLY
-        assert "Website Updated" in mailer.sent[0]["subject"]
+        assert "1 updated" in mailer.sent[0]["subject"]
 
     def test_scan_not_due_is_skipped_without_force(self, env):
         make, fetcher, _ = env
@@ -268,6 +275,11 @@ class TestScanFlow:
         assert _count(orch, "conferences_audit") == 2
         assert _count(orch, "scan_history") == 2
 
+        from sqlalchemy import text
+        with orch.store.engine.connect() as conn:
+            flags = conn.execute(text("SELECT email_sent FROM conferences_audit")).scalars().all()
+        assert flags == [1, 1]  # both were in the report that went out
+
 
 class TestFailures:
     def test_failure_records_error_and_retries_next_run(self, env):
@@ -281,7 +293,9 @@ class TestFailures:
         state = _state(orch, "alpha")
         assert state.consecutive_error_count == 1
         assert state.next_run_at <= datetime.now()  # still due
-        assert any("ConBOT Error" in m["subject"] for m in mailer.sent)
+        assert len(mailer.sent) == 1
+        assert "1 error" in mailer.sent[0]["subject"]
+        assert "boom" in mailer.sent[0]["html"]
 
     def test_repeated_failures_do_not_email_every_time(self, env):
         make, fetcher, mailer = env
@@ -291,8 +305,9 @@ class TestFailures:
         for _ in range(3):
             orch.scan_single_conference("alpha", force=True)
 
-        error_mails = [m for m in mailer.sent if "ConBOT Error" in m["subject"]]
-        assert len(error_mails) == 1
+        # Only the first failure is reported; the repeats send nothing
+        assert len(mailer.sent) == 1
+        assert "1 error" in mailer.sent[0]["subject"]
         assert _state(orch, "alpha").consecutive_error_count == 3
 
     def test_success_resets_error_count(self, env):

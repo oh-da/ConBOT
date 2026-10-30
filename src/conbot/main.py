@@ -139,6 +139,10 @@ class ConferenceScanOrchestrator:
             logger.error(f"Failed to initialize email client: {e}")
             raise
 
+        # Entries for this run's report email, as (entry, audit kwargs) pairs.
+        # Filled by scan_conference / _record_failure, emptied by _send_report.
+        self._report = []
+
         # Make sure every conference in the YAML has a state row
         self.initialize_conferences()
 
@@ -187,6 +191,7 @@ class ConferenceScanOrchestrator:
                     results["failed"] += 1
         finally:
             self.fetcher.close()
+            self._send_report()
 
         logger.info(
             f"Daily scan complete: {results['succeeded']} succeeded, "
@@ -206,7 +211,7 @@ class ConferenceScanOrchestrator:
         5. Call LLM for summary if changed
         6. Determine new state
         7. Update store and audit trail
-        8. Send email notification
+        8. Queue the result for the run's report email
 
         The first scan of a conference is a baseline: it only counts as a
         change if it already finds deadlines.
@@ -362,42 +367,34 @@ class ConferenceScanOrchestrator:
             self.store.update_conference(conference_id, str(updated_state.url), {"last_error": None})
             logger.info(f"{conference_id}: State updated")
 
-            # Step 10: Send email notification
+            # Step 10: Queue for the report email. The audit row is written
+            # when the report is sent, so it records whether it went out.
             should_send, email_type = self.state_engine.should_send_email(
                 current_mode=previous_mode,
                 new_mode=new_mode,
                 scan_result=scan_result
             )
 
-            email_sent = False
+            audit = {
+                "conference_state": updated_state,
+                "scan_result": scan_result,
+                "previous_watch_mode": previous_mode,
+                "new_watch_mode": new_mode,
+                "transition_reason": transition_reason,
+                "email_type": email_type if should_send else None,
+            }
             if should_send:
-                email_sent = self.email_formatter.send_scan_notification(
+                entry = self.email_formatter.report_entry(
                     conference_state=updated_state,
                     scan_result=scan_result,
                     email_type=email_type,
                     previous_mode=previous_mode
                 )
+                self._report.append((entry, audit))
+            else:
+                self.audit_logger.log_scan(**audit, email_sent=False)
 
-                if email_sent:
-                    logger.info(f"{conference_id}: {email_type} email sent")
-                else:
-                    logger.error(f"{conference_id}: Email send failed")
-
-            # Step 11: Log to audit trail
-            self.audit_logger.log_scan(
-                conference_state=updated_state,
-                scan_result=scan_result,
-                previous_watch_mode=previous_mode,
-                new_watch_mode=new_mode,
-                transition_reason=transition_reason,
-                email_sent=email_sent,
-                email_type=email_type if should_send else None
-            )
-
-            logger.info(
-                f"{conference_id}: Scan complete (duration: {scan_duration:.2f}s, "
-                f"email_sent: {email_sent})"
-            )
+            logger.info(f"{conference_id}: Scan complete (duration: {scan_duration:.2f}s)")
 
             return True
 
@@ -413,11 +410,11 @@ class ConferenceScanOrchestrator:
         started_at: datetime
     ) -> None:
         """
-        Record a failed scan: bump the error counter, audit it, and email.
+        Record a failed scan: bump the error counter, audit it, and report it.
 
         next_run_at is left alone, so the conference is retried on the next run.
         To avoid a daily email for a site that stays down, only the first
-        failure and every 7th consecutive failure are emailed.
+        failure and every 7th consecutive failure go in the report.
         """
         conference_id = conference_state.conference_id
         error_count = conference_state.consecutive_error_count + 1
@@ -439,15 +436,29 @@ class ConferenceScanOrchestrator:
             logger.error(f"{conference_id}: Failed to record scan failure: {store_error}")
 
         if error_count == 1 or error_count % 7 == 0:
+            entry = self.email_formatter.error_entry(
+                conference_name=conference_state.conference_name or conference_id,
+                url=str(conference_state.url),
+                error_message=str(error),
+                error_count=error_count
+            )
+            self._report.append((entry, None))
+
+    def _send_report(self) -> None:
+        """Email one report for everything queued this run, then audit the scans."""
+        report, self._report = self._report, []
+        if not report:
+            return
+
+        sent = self.email_formatter.send_report([entry for entry, _ in report])
+
+        for _, audit in report:
+            if audit is None:
+                continue  # failures are audited in _record_failure
             try:
-                self.email_formatter.send_error_notification(
-                    conference_id=conference_id,
-                    conference_name=conference_state.conference_name or conference_id,
-                    error_message=str(error),
-                    url=str(conference_state.url)
-                )
-            except Exception as email_error:
-                logger.error(f"Failed to send error notification: {email_error}")
+                self.audit_logger.log_scan(**audit, email_sent=sent)
+            except Exception as e:
+                logger.error(f"{audit['conference_state'].conference_id}: Audit log failed: {e}")
 
     def scan_single_conference(
         self,
@@ -486,6 +497,7 @@ class ConferenceScanOrchestrator:
             return self.scan_conference(conference_state)
         finally:
             self.fetcher.close()
+            self._send_report()
 
     def initialize_conferences(self) -> int:
         """
