@@ -62,7 +62,7 @@
     "watch_mode": "MONTHLY",
     "next_run_at": "2026-10-29T15:31:03.690451",
     "last_scan_at": null,
-    "is_active": true,
+    "is_active": false,
     "binary_hash": null,
     "filtered_hash": null,
     "simhash_signature": null,
@@ -73,7 +73,7 @@
     "consecutive_error_count": 2,
     "total_scans": 0,
     "last_error": "Both requests and Playwright failed for https://www.itf-oecd.org/summit. Requests error: 403 Client Error: Forbidden for url: https://www.itf-oecd.org/summit, Playwright error: Page.goto: Timeout 25000ms exceeded.\nCall log:\n  - navigating to \"https://www.itf-oecd.org/summit\", waiting until \"networkidle\"\n",
-    "updated_at": "2026-10-30T11:26:14.222786"
+    "updated_at": "2026-10-30T18:43:55.821640"
   },
   {
     "conference_id": "tra",
