@@ -288,7 +288,9 @@ def scan(config, recipient_email, sender_email, db_path, scan_all, conference_id
             click.echo(f"  Succeeded: {results['succeeded']}")
             click.echo(f"  Failed: {results['failed']}")
 
-            if results['failed']:
+            # A single unreachable site is already reported by email (see
+            # _record_failure); only fail the run when nothing worked.
+            if results['failed'] and not results['succeeded']:
                 sys.exit(1)
 
         elif conference_id:
