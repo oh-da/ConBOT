@@ -9,7 +9,7 @@ ConBOT monitors 6 conference websites (UITP Summit, ITDP, TRB, ITF, TRA, ITS Wor
 - **Detects changes** using three-tier fingerprinting (binary hash → filtered hash → semantic SimHash)
 - **Extracts deadlines** with validated date parsing (abstract, paper, registration dates)
 - **Adapts monitoring frequency** via state machine (MONTHLY → BIWEEKLY → URGENT)
-- **Sends email alerts** with three templates (NO_CHANGE, CHANGE_NO_DATES, CHANGE_WITH_DATES)
+- **Sends one report email per run**, grouping conferences into deadlines published, website updated, scan errors and no change
 - **Discovers links** for dynamic conference pages (TRB, ITF)
 - **Provides audit trail** in SQLite (scan history + audit tables) for full traceability
 
