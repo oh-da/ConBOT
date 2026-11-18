@@ -1244,5 +1244,61 @@
     "deadlines_count": 1,
     "email_type": "CHANGE_WITH_DATES",
     "error_details": null
+  },
+  {
+    "run_id": "ae4fdeaa-2d4f-44e1-bc27-f8dc54b1fbe3",
+    "conference_id": "uitp_summit",
+    "url": "https://www.uitpsummit.org/",
+    "started_at": "2026-11-18T14:03:12.580333",
+    "completed_at": "2026-11-18T14:03:26.555428",
+    "status": "succeeded",
+    "fetch_method": "requests",
+    "fetch_duration_ms": 761,
+    "change_detected": true,
+    "deadlines_count": 1,
+    "email_type": "CHANGE_WITH_DATES",
+    "error_details": null
+  },
+  {
+    "run_id": "693d69c2-9cd1-46fd-969d-91a478b721eb",
+    "conference_id": "trb_annual_meeting",
+    "url": "https://www.nationalacademies.org/units/TRB-Transporta-23-P-586",
+    "started_at": "2026-11-18T14:03:13.346490",
+    "completed_at": "2026-11-18T14:03:26.560270",
+    "status": "succeeded",
+    "fetch_method": "playwright",
+    "fetch_duration_ms": 7923,
+    "change_detected": true,
+    "deadlines_count": 2,
+    "email_type": "CHANGE_WITH_DATES",
+    "error_details": null
+  },
+  {
+    "run_id": "545671a5-3257-4169-9591-340d4df62527",
+    "conference_id": "tra",
+    "url": "http://traconference.eu/",
+    "started_at": "2026-11-18T14:03:21.273923",
+    "completed_at": "2026-11-18T14:03:26.562035",
+    "status": "succeeded",
+    "fetch_method": "requests",
+    "fetch_duration_ms": 1312,
+    "change_detected": true,
+    "deadlines_count": 1,
+    "email_type": "CHANGE_WITH_DATES",
+    "error_details": null
+  },
+  {
+    "run_id": "c0ede1c7-740b-4018-b041-690ff67683b5",
+    "conference_id": "its_world_congress",
+    "url": "https://www.itsinternational.com/events/its-world-congress-2027",
+    "started_at": "2026-11-18T14:03:22.591279",
+    "completed_at": "2026-11-18T14:03:26.563870",
+    "status": "succeeded",
+    "fetch_method": "playwright",
+    "fetch_duration_ms": 2900,
+    "change_detected": true,
+    "deadlines_count": 1,
+    "email_type": "CHANGE_WITH_DATES",
+    "error_details": null
   }
 ]
